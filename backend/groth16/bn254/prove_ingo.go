@@ -1,4 +1,4 @@
-// +build !ingoGpu
+// +build ingoGpu
 
 // Copyright 2020 ConsenSys Software Inc.
 //
@@ -19,6 +19,12 @@
 package groth16
 
 import (
+	"fmt"
+	"math"
+	"math/big"
+	"runtime"
+	"time"
+
 	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
@@ -32,9 +38,8 @@ import (
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/logger"
-	"math/big"
-	"runtime"
-	"time"
+	"github.com/ingonyama-zk/icicle/goicicle"
+	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 )
 
 // Proof represents a Groth16 proof that was encoded with a ProvingKey and can be verified
@@ -178,11 +183,15 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	chBs1Done := make(chan error, 1)
 	computeBS1 := func() {
 		<-chWireValuesB
-		if _, err := bs1.MultiExp(pk.G1.B, wireValuesB, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
+		res, _, err := MsmOnDevice(pk.G1.B,wireValuesB, len(wireValuesB), true)
+		
+		if err != nil {
 			chBs1Done <- err
 			close(chBs1Done)
 			return
 		}
+
+		bs1 = res
 		bs1.AddMixed(&pk.G1.Beta)
 		bs1.AddMixed(&deltas[1])
 		chBs1Done <- nil
@@ -191,11 +200,15 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	chArDone := make(chan error, 1)
 	computeAR1 := func() {
 		<-chWireValuesA
-		if _, err := ar.MultiExp(pk.G1.A, wireValuesA, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
+		res,_,err := MsmOnDevice(pk.G1.A, wireValuesA, len(wireValuesA), true)
+
+		if err != nil {
 			chArDone <- err
 			close(chArDone)
 			return
 		}
+
+		ar = res
 		ar.AddMixed(&pk.G1.Alpha)
 		ar.AddMixed(&deltas[0])
 		proof.Ar.FromJacobian(&ar)
@@ -211,7 +224,10 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		chKrs2Done := make(chan error, 1)
 		sizeH := int(pk.Domain.Cardinality - 1) // comes from the fact the deg(H)=(n-1)+(n-1)-n=n-2
 		go func() {
-			_, err := krs2.MultiExp(pk.G1.Z, h[:sizeH], ecc.MultiExpConfig{NbTasks: n / 2})
+			scalars := h[:sizeH]
+			res,_,err := MsmOnDevice(pk.G1.Z, scalars, sizeH, true)
+
+			krs2 = res
 			chKrs2Done <- err
 		}()
 
@@ -221,10 +237,14 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		toRemove = append(toRemove, commitmentInfo.CommitmentIndexes())
 		_wireValues := filterHeap(wireValues[r1cs.GetNbPublicVariables():], r1cs.GetNbPublicVariables(), internal.ConcatAll(toRemove...))
 
-		if _, err := krs.MultiExp(pk.G1.K, _wireValues, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
+		res,_,err := MsmOnDevice(pk.G1.K, _wireValues, len(_wireValues), true)
+		
+		if err != nil {
 			chKrsDone <- err
 			return
 		}
+
+		krs = res
 		krs.AddMixed(&deltas[2])
 		n := 3
 		for n != 0 {
@@ -267,10 +287,13 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			nbTasks *= 2
 		}
 		<-chWireValuesB
-		if _, err := Bs.MultiExp(pk.G2.B, wireValuesB, ecc.MultiExpConfig{NbTasks: nbTasks}); err != nil {
+		res,_,err := MsmG2OnDevice(pk.G2.B, wireValuesB, len(wireValuesB), true)
+
+		if err != nil {
 			return err
 		}
 
+		Bs = res
 		deltaS.FromAffine(&pk.G2.Delta)
 		deltaS.ScalarMultiplication(&deltaS, &s)
 		Bs.AddAssign(&deltaS)
@@ -346,13 +369,32 @@ func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
 	c = append(c, padding...)
 	n = len(a)
 
-	domain.FFTInverse(a, fft.DIF)
-	domain.FFTInverse(b, fft.DIF)
-	domain.FFTInverse(c, fft.DIF)
+	/*********** BEGIN SETUP **********/
+	om_selector := int(math.Log(float64(n)) / math.Log(2))
+	twiddles_inv_d, twddles_err := icicle.GenerateTwiddles(n, om_selector, true)
 
-	domain.FFT(a, fft.DIT, fft.OnCoset())
-	domain.FFT(b, fft.DIT, fft.OnCoset())
-	domain.FFT(c, fft.DIT, fft.OnCoset())
+	if twddles_err != nil {
+		fmt.Print(twddles_err)
+	}
+
+	twiddles_d, twddles_err := icicle.GenerateTwiddles(n, om_selector, false)
+
+	cosetPowers_d, _ := goicicle.CudaMalloc(n*fr.Bytes)
+	cosetTable := icicle.BatchConvertFromFrGnark[icicle.ScalarField](domain.CosetTable)
+	goicicle.CudaMemCpyHtoD[icicle.ScalarField](cosetPowers_d, cosetTable, n*fr.Bytes)
+
+	cosetPowersInv_d, _ := goicicle.CudaMalloc(n*fr.Bytes)
+	cosetTableInv := icicle.BatchConvertFromFrGnark[icicle.ScalarField](domain.CosetTableInv)
+	goicicle.CudaMemCpyHtoD[icicle.ScalarField](cosetPowersInv_d, cosetTableInv, n*fr.Bytes)
+	
+	/*********** END SETUP **********/
+
+	a_intt_d, a_device := INttOnDevice(a, twiddles_inv_d, nil, n, n*fr.Bytes, false)
+	b_intt_d, b_device := INttOnDevice(b, twiddles_inv_d, nil, n, n*fr.Bytes, false)
+	c_intt_d, c_device := INttOnDevice(c, twiddles_inv_d, nil, n, n*fr.Bytes, false)
+	a = NttOnDevice(a_device, a_intt_d, twiddles_d, cosetPowers_d, n, n, n*fr.Bytes, true)
+	b = NttOnDevice(b_device, b_intt_d, twiddles_d, cosetPowers_d, n, n, n*fr.Bytes, true)
+	c = NttOnDevice(c_device, c_intt_d, twiddles_d, cosetPowers_d, n, n, n*fr.Bytes, true)
 
 	var den, one fr.Element
 	one.SetOne()
@@ -370,7 +412,13 @@ func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
 	})
 
 	// ifft_coset
-	domain.FFTInverse(a, fft.DIF, fft.OnCoset())
+	final, _ := INttOnDevice(a, twiddles_inv_d, cosetPowersInv_d, n, n*fr.Bytes, true)
+	
+	icicle.ReverseScalars(final, n)
 
+	a_host := make([]icicle.ScalarField, n)
+	goicicle.CudaMemCpyDtoH[icicle.ScalarField](a_host, final, n*fr.Bytes)
+	a = icicle.BatchConvertToFrGnark[icicle.ScalarField](a_host)
+	
 	return a
 }

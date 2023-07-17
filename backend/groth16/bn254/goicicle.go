@@ -6,21 +6,23 @@ import (
 	"unsafe"
 
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/ingonyama-zk/icicle/goicicle"
 	cudawrapper "github.com/ingonyama-zk/icicle/goicicle"
 	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 )
 
-func INttOnDevice(scalars_d, twiddles_d, cosetPowers_d unsafe.Pointer, size, sizeBytes int, isCoset bool) unsafe.Pointer {
-	defer icicle.TimeTrack(time.Now())
+func INttOnDevice(scalars []fr.Element, twiddles_d, cosetPowers_d unsafe.Pointer, size, sizeBytes int, isCoset bool) (unsafe.Pointer, unsafe.Pointer) {
+	scalars_d, _ := cudawrapper.CudaMalloc(sizeBytes)
+	cudawrapper.CudaMemCpyHtoD(scalars_d, scalars, sizeBytes)
 
-	icicle.FromMontgomery(scalars_d, size)
+	icicle.FromMontgomery(scalars_d, len(scalars))
+
 	icicle.ReverseScalars(scalars_d, size)
-
 	scalarsInterp := icicle.Interpolate(scalars_d, twiddles_d, cosetPowers_d, size, isCoset)
 
-	return scalarsInterp
+	return scalarsInterp, scalars_d
 }
 
 func NttOnDevice(scalars_out, scalars_d, twiddles_d, coset_powers_d unsafe.Pointer, size, twid_size, size_bytes int, isCoset bool) []fr.Element {
@@ -41,8 +43,16 @@ func NttOnDevice(scalars_out, scalars_d, twiddles_d, coset_powers_d unsafe.Point
 	return a_host
 }
 
-func MsmOnDevice(scalars_d, points_d unsafe.Pointer, count int, convert bool) (curve.G1Jac, unsafe.Pointer, error) {
+func MsmOnDevice(points []curve.G1Affine, scalars []fr.Element, count int, convert bool) (curve.G1Jac, unsafe.Pointer, error) {
 	defer icicle.TimeTrack(time.Now())
+
+	scalars_d, _ := cudawrapper.CudaMalloc(len(scalars) * fr.Bytes)
+	cudawrapper.CudaMemCpyHtoD(scalars_d, scalars, len(scalars)*fr.Bytes)
+
+	pointsBytesA := len(points) * fp.Bytes * 2
+	points_d, _ := goicicle.CudaMalloc(pointsBytesA)
+	iciclePointsA := icicle.BatchConvertFromG1Affine(points)
+	goicicle.CudaMemCpyHtoD[icicle.PointAffineNoInfinityBN254](points_d, iciclePointsA, pointsBytesA)
 
 	out_d, _ := cudawrapper.CudaMalloc(96)
 	icicle.Commit(out_d, scalars_d, points_d, count)
@@ -57,12 +67,20 @@ func MsmOnDevice(scalars_d, points_d unsafe.Pointer, count int, convert bool) (c
 
 }
 
-func MsmG2OnDevice(scalars_d, points_d unsafe.Pointer, count int, convert bool) (curve.G2Jac, unsafe.Pointer, error) {
+func MsmG2OnDevice(points []curve.G2Affine, scalars []fr.Element, count int, convert bool) (curve.G2Jac, unsafe.Pointer, error) {
 	defer icicle.TimeTrack(time.Now())
+
+	scalars_d, _ := cudawrapper.CudaMalloc(len(scalars) * fr.Bytes)
+	cudawrapper.CudaMemCpyHtoD(scalars_d, scalars, len(scalars)*fr.Bytes)
 
 	out_d, _ := goicicle.CudaMalloc(192)
 
-	icicle.Commit(out_d, scalars_d, points_d, count)
+	pointsBytesA := len(points) * fp.Bytes * 2
+	points_d, _ := goicicle.CudaMalloc(pointsBytesA)
+	iciclePointsA := icicle.BatchConvertFromG2Affine(points)
+	goicicle.CudaMemCpyHtoD[icicle.G2PointAffine](points_d, iciclePointsA, pointsBytesA)
+
+	icicle.CommitG2(out_d, scalars_d, points_d, count)
 
 	if convert {
 		outHost := make([]icicle.G2Point, 1)
