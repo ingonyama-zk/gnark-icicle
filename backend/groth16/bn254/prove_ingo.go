@@ -1,4 +1,4 @@
-// +build !ingoGpu
+// +build ingoGpu
 
 // Copyright 2020 ConsenSys Software Inc.
 //
@@ -19,10 +19,14 @@
 package groth16
 
 import (
+	"math/big"
+	"runtime"
+	"time"
+	"unsafe"
+
 	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/pedersen"
 	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/groth16/internal"
@@ -32,9 +36,8 @@ import (
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/logger"
-	"math/big"
-	"runtime"
-	"time"
+	"github.com/ingonyama-zk/icicle/goicicle"
+	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 )
 
 // Proof represents a Groth16 proof that was encoded with a ProvingKey and can be verified
@@ -96,13 +99,6 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		}(i)))
 	}
 
-	if r1cs.GkrInfo.Is() {
-		var gkrData cs.GkrSolvingData
-		solverOpts = append(solverOpts,
-			solver.OverrideHint(r1cs.GkrInfo.SolveHintID, cs.GkrSolveHint(r1cs.GkrInfo, &gkrData)),
-			solver.OverrideHint(r1cs.GkrInfo.ProveHintID, cs.GkrProveHint(r1cs.GkrInfo.HashName, &gkrData)))
-	}
-
 	_solution, err := r1cs.Solve(fullWitness, solverOpts...)
 	if err != nil {
 		return nil, err
@@ -123,10 +119,10 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	}
 
 	// H (witness reduction / FFT part)
-	var h []fr.Element
+	var h unsafe.Pointer
 	chHDone := make(chan struct{}, 1)
 	go func() {
-		h = computeH(solution.A, solution.B, solution.C, &pk.Domain)
+		h = computeH(solution.A, solution.B, solution.C, pk)
 		solution.A = nil
 		solution.B = nil
 		solution.C = nil
@@ -182,31 +178,37 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 
 	n := runtime.NumCPU()
 
-	chBs1Done := make(chan error, 1)
 	computeBS1 := func() {
 		<-chWireValuesB
-		if _, err := bs1.MultiExp(pk.G1.B, wireValuesB, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
-			chBs1Done <- err
-			close(chBs1Done)
-			return
-		}
+
+		scals := wireValuesB
+		scalarBytes := len(scals) * 32
+		scalars_d, _ := goicicle.CudaMalloc(scalarBytes)
+		goicicle.CudaMemCpyHtoD[fr.Element](scalars_d, scals, scalarBytes)
+		MontConvOnDevice(scalars_d, len(scals), false)
+
+		icicleRes, _, _ := MsmOnDevice(scalars_d, pk.G1Device.B, len(scals), true)
+
+		bs1 = icicleRes
 		bs1.AddMixed(&pk.G1.Beta)
 		bs1.AddMixed(&deltas[1])
-		chBs1Done <- nil
 	}
 
-	chArDone := make(chan error, 1)
 	computeAR1 := func() {
 		<-chWireValuesA
-		if _, err := ar.MultiExp(pk.G1.A, wireValuesA, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
-			chArDone <- err
-			close(chArDone)
-			return
-		}
+
+		scals := wireValuesA
+		scalarBytes := len(scals) * 32
+		scalars_d, _ := goicicle.CudaMalloc(scalarBytes)
+		goicicle.CudaMemCpyHtoD[fr.Element](scalars_d, scals, scalarBytes)
+		MontConvOnDevice(scalars_d, len(scals), false)
+
+		icicleRes, _, _ := MsmOnDevice(scalars_d, pk.G1Device.A, len(scals), true)
+
+		ar = icicleRes
 		ar.AddMixed(&pk.G1.Alpha)
 		ar.AddMixed(&deltas[0])
 		proof.Ar.FromJacobian(&ar)
-		chArDone <- nil
 	}
 
 	chKrsDone := make(chan error, 1)
@@ -215,50 +217,39 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		// however, having similar lengths for our tasks helps with parallelism
 
 		var krs, krs2, p1 curve.G1Jac
-		chKrs2Done := make(chan error, 1)
 		sizeH := int(pk.Domain.Cardinality - 1) // comes from the fact the deg(H)=(n-1)+(n-1)-n=n-2
-		go func() {
-			_, err := krs2.MultiExp(pk.G1.Z, h[:sizeH], ecc.MultiExpConfig{NbTasks: n / 2})
-			chKrs2Done <- err
-		}()
 
-		// filter the wire values if needed
-		// TODO Perf @Tabaie worst memory allocation offender
+		icicleKrs2Res, _, _ := MsmOnDevice(h, pk.G1Device.Z, sizeH, true)
+
+		krs2 = icicleKrs2Res
+		// filter the wire values if needed;
 		toRemove := commitmentInfo.GetPrivateCommitted()
 		toRemove = append(toRemove, commitmentInfo.CommitmentIndexes())
 		_wireValues := filterHeap(wireValues[r1cs.GetNbPublicVariables():], r1cs.GetNbPublicVariables(), internal.ConcatAll(toRemove...))
 
-		if _, err := krs.MultiExp(pk.G1.K, _wireValues, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
+		scals := _wireValues[r1cs.GetNbPublicVariables():]
+		scalarBytes := len(scals) * 32
+		scalars_d, _ := goicicle.CudaMalloc(scalarBytes)
+		goicicle.CudaMemCpyHtoD[fr.Element](scalars_d, scals, scalarBytes)
+		MontConvOnDevice(scalars_d, len(scals), false)
+
+		icicleKrsRes, _, err := MsmOnDevice(scalars_d, pk.G1Device.K, len(scals), true)
+
+		if err != nil {
 			chKrsDone <- err
 			return
 		}
+
+		krs = icicleKrsRes
 		krs.AddMixed(&deltas[2])
-		n := 3
-		for n != 0 {
-			select {
-			case err := <-chKrs2Done:
-				if err != nil {
-					chKrsDone <- err
-					return
-				}
-				krs.AddAssign(&krs2)
-			case err := <-chArDone:
-				if err != nil {
-					chKrsDone <- err
-					return
-				}
-				p1.ScalarMultiplication(&ar, &s)
-				krs.AddAssign(&p1)
-			case err := <-chBs1Done:
-				if err != nil {
-					chKrsDone <- err
-					return
-				}
-				p1.ScalarMultiplication(&bs1, &r)
-				krs.AddAssign(&p1)
-			}
-			n--
-		}
+
+		krs.AddAssign(&krs2)
+
+		p1.ScalarMultiplication(&ar, &s)
+		krs.AddAssign(&p1)
+
+		p1.ScalarMultiplication(&bs1, &r)
+		krs.AddAssign(&p1)
 
 		proof.Krs.FromJacobian(&krs)
 		chKrsDone <- nil
@@ -274,10 +265,20 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			nbTasks *= 2
 		}
 		<-chWireValuesB
-		if _, err := Bs.MultiExp(pk.G2.B, wireValuesB, ecc.MultiExpConfig{NbTasks: nbTasks}); err != nil {
+
+		scals := wireValuesB
+		scalarBytes := len(scals) * 32
+		scalars_d, _ := goicicle.CudaMalloc(scalarBytes)
+		scalarsIcicle := icicle.BatchConvertFromFrGnarkThreaded[icicle.ScalarField](scals, 7)
+		goicicle.CudaMemCpyHtoD[icicle.ScalarField](scalars_d, scalarsIcicle, scalarBytes)
+
+		icicleG2Res, _, err := MsmG2OnDevice(pk.G2Device.B, scalars_d, len(scals), true)
+
+		if err != nil {
 			return err
 		}
 
+		Bs = icicleG2Res
 		deltaS.FromAffine(&pk.G2.Delta)
 		deltaS.ScalarMultiplication(&deltaS, &s)
 		Bs.AddAssign(&deltaS)
@@ -294,6 +295,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	go computeKRS()
 	go computeAR1()
 	go computeBS1()
+
 	if err := computeBS2(); err != nil {
 		return nil, err
 	}
@@ -337,7 +339,7 @@ func filterHeap(slice []fr.Element, sliceFirstIndex int, toRemove []int) (r []fr
 	return
 }
 
-func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
+func computeH(a, b, c []fr.Element, pk *ProvingKey) unsafe.Pointer {
 	// H part of Krs
 	// Compute H (hz=ab-c, where z=-2 on ker X^n+1 (z(x)=x^n-1))
 	// 	1 - _a = ifft(a), _b = ifft(b), _c = ifft(c)
@@ -347,37 +349,46 @@ func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
 	n := len(a)
 
 	// add padding to ensure input length is domain cardinality
-	padding := make([]fr.Element, int(domain.Cardinality)-n)
+	padding := make([]fr.Element, int(pk.Domain.Cardinality)-n)
 	a = append(a, padding...)
 	b = append(b, padding...)
 	c = append(c, padding...)
 	n = len(a)
 
-	domain.FFTInverse(a, fft.DIF)
-	domain.FFTInverse(b, fft.DIF)
-	domain.FFTInverse(c, fft.DIF)
+	sizeBytes := n * fr.Bytes
 
-	domain.FFT(a, fft.DIT, fft.OnCoset())
-	domain.FFT(b, fft.DIT, fft.OnCoset())
-	domain.FFT(c, fft.DIT, fft.OnCoset())
+	/*********** Copy a,b,c to Device Start ************/
+	copyADone := make(chan unsafe.Pointer, 1)
+	copyBDone := make(chan unsafe.Pointer, 1)
+	copyCDone := make(chan unsafe.Pointer, 1)
 
-	var den, one fr.Element
-	one.SetOne()
-	den.Exp(domain.FrMultiplicativeGen, big.NewInt(int64(domain.Cardinality)))
-	den.Sub(&den, &one).Inverse(&den)
+	go CopyScalarsToDevice(a, sizeBytes, copyADone)
+	go CopyScalarsToDevice(b, sizeBytes, copyBDone)
+	go CopyScalarsToDevice(c, sizeBytes, copyCDone)
 
-	// h = ifft_coset(ca o cb - cc)
-	// reusing a to avoid unnecessary memory allocation
-	utils.Parallelize(n, func(start, end int) {
-		for i := start; i < end; i++ {
-			a[i].Mul(&a[i], &b[i]).
-				Sub(&a[i], &c[i]).
-				Mul(&a[i], &den)
-		}
-	})
+	a_device := <-copyADone
+	b_device := <-copyBDone
+	c_device := <-copyCDone
+	/*********** Copy a,b,c to Device End ************/
 
-	// ifft_coset
-	domain.FFTInverse(a, fft.DIF, fft.OnCoset())
+	computeInttNttDone := make(chan error, 1)
+	computeInttNttOnDevice := func(devicePointer unsafe.Pointer) {
+		a_intt_d := INttOnDevice(devicePointer, pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
+		NttOnDevice(devicePointer, a_intt_d, pk.DomainDevice.Twiddles, pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
 
-	return a
+		computeInttNttDone <- nil
+	}
+
+	go computeInttNttOnDevice(a_device)
+	go computeInttNttOnDevice(b_device)
+	go computeInttNttOnDevice(c_device)
+	_, _, _ = <-computeInttNttDone, <-computeInttNttDone, <-computeInttNttDone
+
+	PolyOps(a_device, b_device, c_device, pk.DenDevice, n)
+
+	h := INttOnDevice(a_device, pk.DomainDevice.TwiddlesInv, pk.DomainDevice.CosetTableInv, n, sizeBytes, true)
+
+	icicle.ReverseScalars(h, n)
+
+	return h
 }
