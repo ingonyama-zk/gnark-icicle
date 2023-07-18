@@ -24,6 +24,7 @@ import (
 	"unsafe"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/ecc/bls24-317/fp"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
@@ -44,12 +45,12 @@ type ProvingKey struct {
 	Domain fft.Domain
 
 	G1Device struct {
-		A, B, K, Z			unsafe.Pointer
+		A, B, K, Z unsafe.Pointer
 	}
 
 	DomainDevice struct {
-		Twiddles, TwiddlesInv		unsafe.Pointer
-		CosetTable, CosetTableInv	unsafe.Pointer
+		Twiddles, TwiddlesInv     unsafe.Pointer
+		CosetTable, CosetTableInv unsafe.Pointer
 	}
 
 	// [α]₁, [β]₁, [δ]₁
@@ -61,10 +62,10 @@ type ProvingKey struct {
 	}
 
 	G2Device struct {
-		B			unsafe.Pointer
+		B unsafe.Pointer
 	}
 
-	DenDevice		unsafe.Pointer
+	DenDevice unsafe.Pointer
 
 	// [β]₂, [δ]₂, [B(t)]₂
 	G2 struct {
@@ -362,7 +363,7 @@ func Setup(r1cs *cs.R1CS, pk *ProvingKey, vk *VerifyingKey) error {
 
 func (pk *ProvingKey) setupDevicePointers() {
 	n := int(pk.Domain.Cardinality)
-	sizeBytes := n*fr.Bytes
+	sizeBytes := n * fr.Bytes
 
 	/*************************  Start Domain Device Setup  ***************************/
 
