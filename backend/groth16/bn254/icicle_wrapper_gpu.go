@@ -1,3 +1,5 @@
+//go:build gpu
+
 package groth16
 
 import (
