@@ -1,4 +1,4 @@
-// +build !ingoGpu
+/* // +build !ingoGpu
 
 // Copyright 2020 ConsenSys Software Inc.
 //
@@ -381,3 +381,4 @@ func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
 
 	return a
 }
+*/

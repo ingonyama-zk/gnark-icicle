@@ -18,16 +18,23 @@ package groth16
 
 import (
 	"errors"
+	"fmt"
+	"math"
+	"math/big"
+	"unsafe"
+
 	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/pedersen"
 	"github.com/consensys/gnark/backend/groth16/internal"
 	"github.com/consensys/gnark/constraint"
 	cs "github.com/consensys/gnark/constraint/bn254"
-	"math/big"
 	"math/bits"
+	goicicle "github.com/ingonyama-zk/icicle/goicicle"
+	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 )
 
 // ProvingKey is used by a Groth16 prover to encode a proof of a statement
@@ -36,6 +43,15 @@ type ProvingKey struct {
 	// domain
 	Domain fft.Domain
 
+	G1Device struct {
+		A, B, K, Z			unsafe.Pointer
+	}
+
+	DomainDevice struct {
+		Twiddles, TwiddlesInv		unsafe.Pointer
+		CosetTable, CosetTableInv	unsafe.Pointer
+	}
+
 	// [α]₁, [β]₁, [δ]₁
 	// [A(t)]₁, [B(t)]₁, [Kpk(t)]₁, [Z(t)]₁
 	G1 struct {
@@ -43,6 +59,12 @@ type ProvingKey struct {
 		A, B, Z            []curve.G1Affine
 		K                  []curve.G1Affine // the indexes correspond to the private wires
 	}
+
+	G2Device struct {
+		B			unsafe.Pointer
+	}
+
+	DenDevice		unsafe.Pointer
 
 	// [β]₂, [δ]₂, [B(t)]₂
 	G2 struct {
@@ -333,7 +355,113 @@ func Setup(r1cs *cs.R1CS, pk *ProvingKey, vk *VerifyingKey) error {
 	// set domain
 	pk.Domain = *domain
 
+	pk.setupDevicePointers()
+
 	return nil
+}
+
+func (pk *ProvingKey) setupDevicePointers() {
+	n := int(pk.Domain.Cardinality)
+	sizeBytes := n*fr.Bytes
+
+	/*************************  Start Domain Device Setup  ***************************/
+
+	/*************************     CosetTableInv      ***************************/
+	cosetPowersInv_d, _ := goicicle.CudaMalloc(sizeBytes)
+	goicicle.CudaMemCpyHtoD[fr.Element](cosetPowersInv_d, pk.Domain.CosetTableInv, sizeBytes)
+	MontConvOnDevice(cosetPowersInv_d, len(pk.Domain.CosetTable), false)
+
+	pk.DomainDevice.CosetTableInv = cosetPowersInv_d
+
+	/*************************     CosetTable      ***************************/
+	cosetPowers_d, _ := goicicle.CudaMalloc(sizeBytes)
+	goicicle.CudaMemCpyHtoD[fr.Element](cosetPowers_d, pk.Domain.CosetTable, sizeBytes)
+	MontConvOnDevice(cosetPowers_d, len(pk.Domain.CosetTable), false)
+
+	pk.DomainDevice.CosetTable = cosetPowers_d
+
+	/*************************     Twiddles and Twiddles Inv    ***************************/
+	om_selector := int(math.Log(float64(n)) / math.Log(2))
+	twiddlesInv_d_gen, twddles_err := icicle.GenerateTwiddles(n, om_selector, true)
+
+	if twddles_err != nil {
+		fmt.Print(twiddlesInv_d_gen)
+	}
+
+	twiddles_d_gen, twddles_err := icicle.GenerateTwiddles(n, om_selector, false)
+	if twddles_err != nil {
+		fmt.Print(twiddles_d_gen)
+	}
+
+	pk.DomainDevice.Twiddles = twiddles_d_gen
+	pk.DomainDevice.TwiddlesInv = twiddlesInv_d_gen
+
+	/*************************     Den      ***************************/
+	var denI, oneI fr.Element
+	oneI.SetOne()
+	denI.Exp(pk.Domain.FrMultiplicativeGen, big.NewInt(int64(pk.Domain.Cardinality)))
+	denI.Sub(&denI, &oneI).Inverse(&denI)
+
+	den_d, _ := goicicle.CudaMalloc(sizeBytes)
+	log2Size := int(math.Floor(math.Log2(float64(n))))
+	denIcicle := *icicle.NewFieldFromFrGnark[icicle.ScalarField](denI)
+	denIcicleArr := []icicle.ScalarField{denIcicle}
+	for i := 0; i < log2Size; i++ {
+		denIcicleArr = append(denIcicleArr, denIcicleArr...)
+	}
+	for i := 0; i < (n - int(math.Pow(2, float64(log2Size)))); i++ {
+		denIcicleArr = append(denIcicleArr, denIcicle)
+	}
+
+	goicicle.CudaMemCpyHtoD[icicle.ScalarField](den_d, denIcicleArr, sizeBytes)
+
+	pk.DenDevice = den_d
+
+	/*************************  End Domain Device Setup  ***************************/
+
+	/*************************  Start G1 Device Setup  ***************************/
+	/*************************     A      ***************************/
+	pointsBytesA := len(pk.G1.A) * fp.Bytes * 2
+	a_d, _ := goicicle.CudaMalloc(pointsBytesA)
+	goicicle.CudaMemCpyHtoD[curve.G1Affine](a_d, pk.G1.A, pointsBytesA)
+	icicle.AffinePointFromMontgomery(a_d, len(pk.G1.A))
+
+	pk.G1Device.A = a_d
+
+	/*************************     B      ***************************/
+	pointsBytesB := len(pk.G1.B) * fp.Bytes * 2
+	b_d, _ := goicicle.CudaMalloc(pointsBytesB)
+	goicicle.CudaMemCpyHtoD[curve.G1Affine](b_d, pk.G1.B, pointsBytesB)
+	icicle.AffinePointFromMontgomery(b_d, len(pk.G1.B))
+
+	pk.G1Device.B = b_d
+
+	/*************************     K      ***************************/
+	pointsBytesK := len(pk.G1.K) * fp.Bytes * 2
+	k_d, _ := goicicle.CudaMalloc(pointsBytesK)
+	goicicle.CudaMemCpyHtoD[curve.G1Affine](k_d, pk.G1.K, pointsBytesK)
+	icicle.AffinePointFromMontgomery(k_d, len(pk.G1.K))
+
+	pk.G1Device.K = k_d
+
+	/*************************     Z      ***************************/
+	pointsBytesZ := len(pk.G1.Z) * fp.Bytes * 2
+	z_d, _ := goicicle.CudaMalloc(pointsBytesZ)
+	goicicle.CudaMemCpyHtoD[curve.G1Affine](z_d, pk.G1.Z, pointsBytesZ)
+	icicle.AffinePointFromMontgomery(z_d, len(pk.G1.Z))
+
+	pk.G1Device.Z = z_d
+	/*************************  End G1 Device Setup  ***************************/
+
+	/*************************  Start G2 Device Setup  ***************************/
+	pointsBytesB2 := len(pk.G2.B) * fp.Bytes * 2
+	b2_d, _ := goicicle.CudaMalloc(pointsBytesB2)
+	goicicle.CudaMemCpyHtoD[curve.G2Affine](b2_d, pk.G2.B, pointsBytesB2)
+	icicle.G2AffinePointFromMontgomery(b2_d, len(pk.G2.B))
+
+	pk.G2Device.B = b2_d
+	/*************************  End G2 Device Setup  ***************************/
+
 }
 
 // Precompute sets e, -[δ]₂, -[γ]₂

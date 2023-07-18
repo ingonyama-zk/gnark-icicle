@@ -1,5 +1,3 @@
-// +build ingoGpu
-
 // Copyright 2020 ConsenSys Software Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +17,6 @@
 package groth16
 
 import (
-	"fmt"
-	"math"
 	"math/big"
 	"runtime"
 	"time"
@@ -28,7 +24,6 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/pedersen"
 	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/groth16/internal"
@@ -124,7 +119,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	var h []fr.Element
 	chHDone := make(chan struct{}, 1)
 	go func() {
-		h = computeH(solution.A, solution.B, solution.C, &pk.Domain)
+		h = computeH(solution.A, solution.B, solution.C, pk)
 		solution.A = nil
 		solution.B = nil
 		solution.C = nil
@@ -183,7 +178,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	chBs1Done := make(chan error, 1)
 	computeBS1 := func() {
 		<-chWireValuesB
-		res, _, err := MsmOnDevice(pk.G1.B,wireValuesB, len(wireValuesB), true)
+		res, _, err := MsmOnDevice(pk.G1Device.B, wireValuesB, len(wireValuesB), true)
 		
 		if err != nil {
 			chBs1Done <- err
@@ -200,7 +195,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	chArDone := make(chan error, 1)
 	computeAR1 := func() {
 		<-chWireValuesA
-		res,_,err := MsmOnDevice(pk.G1.A, wireValuesA, len(wireValuesA), true)
+		res,_,err := MsmOnDevice(pk.G1Device.A, wireValuesA, len(wireValuesA), true)
 
 		if err != nil {
 			chArDone <- err
@@ -225,7 +220,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		sizeH := int(pk.Domain.Cardinality - 1) // comes from the fact the deg(H)=(n-1)+(n-1)-n=n-2
 		go func() {
 			scalars := h[:sizeH]
-			res,_,err := MsmOnDevice(pk.G1.Z, scalars, sizeH, true)
+			res,_,err := MsmOnDevice(pk.G1Device.Z, scalars, sizeH, true)
 
 			krs2 = res
 			chKrs2Done <- err
@@ -237,7 +232,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		toRemove = append(toRemove, commitmentInfo.CommitmentIndexes())
 		_wireValues := filterHeap(wireValues[r1cs.GetNbPublicVariables():], r1cs.GetNbPublicVariables(), internal.ConcatAll(toRemove...))
 
-		res,_,err := MsmOnDevice(pk.G1.K, _wireValues, len(_wireValues), true)
+		res,_,err := MsmOnDevice(pk.G1Device.K, _wireValues, len(_wireValues), true)
 		
 		if err != nil {
 			chKrsDone <- err
@@ -287,7 +282,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			nbTasks *= 2
 		}
 		<-chWireValuesB
-		res,_,err := MsmG2OnDevice(pk.G2.B, wireValuesB, len(wireValuesB), true)
+		res,_,err := MsmG2OnDevice(pk.G2Device.B, wireValuesB, len(wireValuesB), true)
 
 		if err != nil {
 			return err
@@ -353,7 +348,7 @@ func filterHeap(slice []fr.Element, sliceFirstIndex int, toRemove []int) (r []fr
 	return
 }
 
-func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
+func computeH(a, b, c []fr.Element, pk *ProvingKey) []fr.Element {
 	// H part of Krs
 	// Compute H (hz=ab-c, where z=-2 on ker X^n+1 (z(x)=x^n-1))
 	// 	1 - _a = ifft(a), _b = ifft(b), _c = ifft(c)
@@ -363,42 +358,24 @@ func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
 	n := len(a)
 
 	// add padding to ensure input length is domain cardinality
-	padding := make([]fr.Element, int(domain.Cardinality)-n)
+	padding := make([]fr.Element, int(pk.Domain.Cardinality)-n)
 	a = append(a, padding...)
 	b = append(b, padding...)
 	c = append(c, padding...)
 	n = len(a)
 
-	/*********** BEGIN SETUP **********/
-	om_selector := int(math.Log(float64(n)) / math.Log(2))
-	twiddles_inv_d, twddles_err := icicle.GenerateTwiddles(n, om_selector, true)
+	sizeBytes := n * fr.Bytes
 
-	if twddles_err != nil {
-		fmt.Print(twddles_err)
-	}
-
-	twiddles_d, twddles_err := icicle.GenerateTwiddles(n, om_selector, false)
-
-	cosetPowers_d, _ := goicicle.CudaMalloc(n*fr.Bytes)
-	cosetTable := icicle.BatchConvertFromFrGnark[icicle.ScalarField](domain.CosetTable)
-	goicicle.CudaMemCpyHtoD[icicle.ScalarField](cosetPowers_d, cosetTable, n*fr.Bytes)
-
-	cosetPowersInv_d, _ := goicicle.CudaMalloc(n*fr.Bytes)
-	cosetTableInv := icicle.BatchConvertFromFrGnark[icicle.ScalarField](domain.CosetTableInv)
-	goicicle.CudaMemCpyHtoD[icicle.ScalarField](cosetPowersInv_d, cosetTableInv, n*fr.Bytes)
-	
-	/*********** END SETUP **********/
-
-	a_intt_d, a_device := INttOnDevice(a, twiddles_inv_d, nil, n, n*fr.Bytes, false)
-	b_intt_d, b_device := INttOnDevice(b, twiddles_inv_d, nil, n, n*fr.Bytes, false)
-	c_intt_d, c_device := INttOnDevice(c, twiddles_inv_d, nil, n, n*fr.Bytes, false)
-	a = NttOnDevice(a_device, a_intt_d, twiddles_d, cosetPowers_d, n, n, n*fr.Bytes, true)
-	b = NttOnDevice(b_device, b_intt_d, twiddles_d, cosetPowers_d, n, n, n*fr.Bytes, true)
-	c = NttOnDevice(c_device, c_intt_d, twiddles_d, cosetPowers_d, n, n, n*fr.Bytes, true)
+	a_intt_d, a_device := INttOnDevice(a, pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
+	b_intt_d, b_device := INttOnDevice(b, pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
+	c_intt_d, c_device := INttOnDevice(c, pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
+	a = NttOnDevice(a_device, a_intt_d, pk.DomainDevice.Twiddles, pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
+	b = NttOnDevice(b_device, b_intt_d, pk.DomainDevice.Twiddles, pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
+	c = NttOnDevice(c_device, c_intt_d, pk.DomainDevice.Twiddles, pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
 
 	var den, one fr.Element
 	one.SetOne()
-	den.Exp(domain.FrMultiplicativeGen, big.NewInt(int64(domain.Cardinality)))
+	den.Exp(pk.Domain.FrMultiplicativeGen, big.NewInt(int64(pk.Domain.Cardinality)))
 	den.Sub(&den, &one).Inverse(&den)
 
 	// h = ifft_coset(ca o cb - cc)
@@ -412,7 +389,7 @@ func computeH(a, b, c []fr.Element, domain *fft.Domain) []fr.Element {
 	})
 
 	// ifft_coset
-	final, _ := INttOnDevice(a, twiddles_inv_d, cosetPowersInv_d, n, n*fr.Bytes, true)
+	final, _ := INttOnDevice(a, pk.DomainDevice.TwiddlesInv, pk.DomainDevice.CosetTableInv, n, n*fr.Bytes, true)
 	
 	icicle.ReverseScalars(final, n)
 
