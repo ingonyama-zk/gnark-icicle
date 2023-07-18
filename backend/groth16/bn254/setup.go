@@ -1,4 +1,4 @@
-// +build !ingoGpu
+//go:build !ingoGpu
 
 // Copyright 2020 ConsenSys Software Inc.
 //
