@@ -349,7 +349,7 @@ func computeH(a, b, c []fr.Element, pk *ProvingKey) unsafe.Pointer {
 
 	PolyOps(a_device, b_device, c_device, pk.DenDevice, n)
 
-	h, timings_final := INttOnDevice(a_device, pk.DomainDevice.TwiddlesInv, pk.DomainDevice.CosetTableInv, n, sizeBytes, true)	
+	h := INttOnDevice(a_device, pk.DomainDevice.TwiddlesInv, pk.DomainDevice.CosetTableInv, n, sizeBytes, true)
 	icicle.ReverseScalars(h, n)
 	
 	return h

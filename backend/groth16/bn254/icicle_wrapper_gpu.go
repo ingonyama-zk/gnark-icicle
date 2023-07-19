@@ -41,7 +41,7 @@ func NttOnDevice(scalars_out, scalars_d, twiddles_d, coset_powers_d unsafe.Point
 func MsmOnDevice(scalars_d, points_d unsafe.Pointer, count int, convert bool) (curve.G1Jac, unsafe.Pointer, error) {
 	out_d, _ := cudawrapper.CudaMalloc(96)
 
-	icicle.Commit(out_d, scalars_d, points_d, count)
+	icicle.Commit(out_d, scalars_d, points_d, count, 10)
 
 	if convert {
 		outHost := make([]icicle.PointBN254, 1)
@@ -55,7 +55,7 @@ func MsmOnDevice(scalars_d, points_d unsafe.Pointer, count int, convert bool) (c
 func MsmG2OnDevice(scalars_d, points_d unsafe.Pointer, count int, convert bool) (curve.G2Jac, unsafe.Pointer, error) {
 	out_d, _ := cudawrapper.CudaMalloc(192)
 	
-	icicle.CommitG2(out_d, scalars_d, points_d, count)
+	icicle.CommitG2(out_d, scalars_d, points_d, count, 10)
 	
 	if convert {
 		outHost := make([]icicle.G2Point, 1)
