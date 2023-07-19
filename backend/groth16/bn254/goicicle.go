@@ -24,7 +24,7 @@ func INttOnDevice(scalars []fr.Element, twiddles_d, cosetPowers_d unsafe.Pointer
 }
 
 func NttOnDevice(scalars_out, scalars_d, twiddles_d, coset_powers_d unsafe.Pointer, size, twid_size, size_bytes int, isCoset bool) []fr.Element {
-	defer icicle.TimeTrack(time.Now(), "NTT")
+	defer icicle.TimeTrack(time.Now())
 
 	res := icicle.Evaluate(scalars_out, scalars_d, twiddles_d, coset_powers_d, size, twid_size, isCoset)
 
@@ -42,13 +42,13 @@ func NttOnDevice(scalars_out, scalars_d, twiddles_d, coset_powers_d unsafe.Point
 }
 
 func MsmOnDevice(points_d unsafe.Pointer, scalars []fr.Element, count int, convert bool) (curve.G1Jac, unsafe.Pointer, error) {
-	defer icicle.TimeTrack(time.Now(), "MSM")
+	defer icicle.TimeTrack(time.Now())
 
 	scalars_d, _ := cudawrapper.CudaMalloc(len(scalars) * fr.Bytes)
 	cudawrapper.CudaMemCpyHtoD(scalars_d, scalars, len(scalars)*fr.Bytes)
 
 	out_d, _ := cudawrapper.CudaMalloc(96)
-	icicle.Commit(out_d, scalars_d, points_d, count)
+	icicle.Commit(out_d, scalars_d, points_d, count, 10)
 
 	if convert {
 		outHost := make([]icicle.PointBN254, 1)
@@ -61,14 +61,14 @@ func MsmOnDevice(points_d unsafe.Pointer, scalars []fr.Element, count int, conve
 }
 
 func MsmG2OnDevice(points_d unsafe.Pointer, scalars []fr.Element, count int, convert bool) (curve.G2Jac, unsafe.Pointer, error) {
-	defer icicle.TimeTrack(time.Now(), "MSM G2")
+	defer icicle.TimeTrack(time.Now())
 
 	scalars_d, _ := cudawrapper.CudaMalloc(len(scalars) * fr.Bytes)
 	cudawrapper.CudaMemCpyHtoD(scalars_d, scalars, len(scalars)*fr.Bytes)
 
 	out_d, _ := cudawrapper.CudaMalloc(192)
 
-	icicle.CommitG2(out_d, scalars_d, points_d, count)
+	icicle.CommitG2(out_d, scalars_d, points_d, count, 10)
 
 	if convert {
 		outHost := make([]icicle.G2Point, 1)
@@ -80,7 +80,7 @@ func MsmG2OnDevice(points_d unsafe.Pointer, scalars []fr.Element, count int, con
 }
 
 func MontConvOnDevice(scalars_d unsafe.Pointer, size int, is_into bool) {
-	defer icicle.TimeTrack(time.Now(), "MontConvert")
+	defer icicle.TimeTrack(time.Now())
 
 	if is_into {
 		icicle.ToMontgomery(scalars_d, size)
@@ -90,7 +90,7 @@ func MontConvOnDevice(scalars_d unsafe.Pointer, size int, is_into bool) {
 }
 
 func CopyScalarsToDevice(scalars []fr.Element, bytes int, copyDone chan unsafe.Pointer) {
-	defer icicle.TimeTrack(time.Now(), "CopyToDevice")
+	defer icicle.TimeTrack(time.Now())
 
 	devicePtr, _ := cudawrapper.CudaMalloc(bytes)
 	cudawrapper.CudaMemCpyHtoD[fr.Element](devicePtr, scalars, bytes)
@@ -100,7 +100,7 @@ func CopyScalarsToDevice(scalars []fr.Element, bytes int, copyDone chan unsafe.P
 }
 
 func PolyOps(a_d, b_d, c_d, den_d unsafe.Pointer, size int) {
-	defer icicle.TimeTrack(time.Now(), "PolyOps")
+	defer icicle.TimeTrack(time.Now())
 
 	ret := icicle.VecScalarMulMod(a_d, b_d, size)
 

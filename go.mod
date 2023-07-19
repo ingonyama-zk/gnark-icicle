@@ -10,11 +10,11 @@ require (
 	github.com/fxamacker/cbor/v2 v2.4.0
 	github.com/google/go-cmp v0.5.9
 	github.com/google/pprof v0.0.0-20230309165930-d61513b1440d
-	github.com/ingonyama-zk/icicle/goicicle v0.0.0-20230716113141-ab69139ade39
+	github.com/ingonyama-zk/icicle v0.0.0-20230719184412-d13143506ece
 	github.com/leanovate/gopter v0.2.9
 	github.com/rs/zerolog v1.29.0
-	golang.org/x/crypto v0.10.0
 	github.com/stretchr/testify v1.8.3
+	golang.org/x/crypto v0.10.0
 	golang.org/x/exp v0.0.0-20230213192124-5e25df0256eb
 )
 
