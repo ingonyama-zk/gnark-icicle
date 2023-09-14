@@ -145,15 +145,15 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			j++
 		}
 		wireValuesASize := len(wireValuesA)
-		scalarBytes := wireValuesASize*fr.Bytes
+		scalarBytes := wireValuesASize * fr.Bytes
 		wireValuesADevicePtr, _ := goicicle.CudaMalloc(scalarBytes)
 		goicicle.CudaMemCpyHtoD[fr.Element](wireValuesADevicePtr, wireValuesA, scalarBytes)
 		iciclegnark.MontConvOnDevice(wireValuesADevicePtr, wireValuesASize, false)
 		wireValuesADevice = iciclegnark.OnDeviceData{
-			P: wireValuesADevicePtr, 
+			P:    wireValuesADevicePtr,
 			Size: wireValuesASize,
 		}
-		
+
 		close(chWireValuesA)
 	}()
 	go func() {
@@ -166,12 +166,12 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			j++
 		}
 		wireValuesBSize := len(wireValuesB)
-		scalarBytes := wireValuesBSize*fr.Bytes
+		scalarBytes := wireValuesBSize * fr.Bytes
 		wireValuesBDevicePtr, _ := goicicle.CudaMalloc(scalarBytes)
 		goicicle.CudaMemCpyHtoD[fr.Element](wireValuesBDevicePtr, wireValuesB, scalarBytes)
 		iciclegnark.MontConvOnDevice(wireValuesBDevicePtr, wireValuesBSize, false)
 		wireValuesBDevice = iciclegnark.OnDeviceData{
-			P: wireValuesBDevicePtr, 
+			P:    wireValuesBDevicePtr,
 			Size: wireValuesBSize,
 		}
 
@@ -221,7 +221,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 
 		var krs, krs2, p1 curve.G1Jac
 		sizeH := int(pk.Domain.Cardinality - 1) // comes from the fact the deg(H)=(n-1)+(n-1)-n=n-2
-		
+
 		if len(pk.G1.Z) > 0 {
 			krs2, _, _ = iciclegnark.MsmOnDevice(h, pk.G1Device.Z, sizeH, true)
 		}
@@ -231,17 +231,16 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		toRemove := commitmentInfo.GetPrivateCommitted()
 		toRemove = append(toRemove, commitmentInfo.CommitmentIndexes())
 		_wireValues := filterHeap(wireValues[r1cs.GetNbPublicVariables():], r1cs.GetNbPublicVariables(), internal.ConcatAll(toRemove...))
-		
-		scalarBytes := len(_wireValues)*fr.Bytes
+
+		scalarBytes := len(_wireValues) * fr.Bytes
 		scalars_d, _ := goicicle.CudaMalloc(scalarBytes)
 		goicicle.CudaMemCpyHtoD[fr.Element](scalars_d, _wireValues, scalarBytes)
 		iciclegnark.MontConvOnDevice(scalars_d, len(_wireValues), false)
 		krs, _, _ = iciclegnark.MsmOnDevice(scalars_d, pk.G1Device.K, len(_wireValues), true)
 		goicicle.CudaFree(scalars_d)
 
-
 		krs.AddMixed(&deltas[2])
-		
+
 		krs.AddAssign(&krs2)
 
 		p1.ScalarMultiplication(&ar, &s)
@@ -353,10 +352,10 @@ func computeH(a, b, c []fr.Element, pk *ProvingKey) unsafe.Pointer {
 	b_device := <-copyBDone
 	c_device := <-copyCDone
 	/*********** Copy a,b,c to Device End ************/
-	
+
 	computeInttNttDone := make(chan error, 1)
-	computeInttNttOnDevice := func (devicePointer unsafe.Pointer) {
-		a_intt_d := iciclegnark.INttOnDevice(devicePointer, pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)		
+	computeInttNttOnDevice := func(devicePointer unsafe.Pointer) {
+		a_intt_d := iciclegnark.INttOnDevice(devicePointer, pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
 		iciclegnark.NttOnDevice(devicePointer, a_intt_d, pk.DomainDevice.Twiddles, pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
 		computeInttNttDone <- nil
 		goicicle.CudaFree(a_intt_d)
@@ -370,7 +369,7 @@ func computeH(a, b, c []fr.Element, pk *ProvingKey) unsafe.Pointer {
 	iciclegnark.PolyOps(a_device, b_device, c_device, pk.DenDevice, n)
 
 	h := iciclegnark.INttOnDevice(a_device, pk.DomainDevice.TwiddlesInv, pk.DomainDevice.CosetTableInv, n, sizeBytes, true)
-	
+
 	go func() {
 		goicicle.CudaFree(a_device)
 		goicicle.CudaFree(b_device)
@@ -378,6 +377,6 @@ func computeH(a, b, c []fr.Element, pk *ProvingKey) unsafe.Pointer {
 	}()
 
 	icicle.ReverseScalars(h, n)
-	
+
 	return h
 }

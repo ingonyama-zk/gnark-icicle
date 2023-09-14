@@ -21,22 +21,22 @@ package groth16
 
 import (
 	"errors"
+	"fmt"
 	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/pedersen"
 	"github.com/consensys/gnark/backend/groth16/internal"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/constraint/bn254"
-	"math/big"
-	"math"
-	"math/bits"
-	"unsafe"
-	"fmt"
 	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
+	"math"
+	"math/big"
+	"math/bits"
+	"unsafe"
 )
 
 // ProvingKey is used by a Groth16 prover to encode a proof of a statement
@@ -54,12 +54,12 @@ type ProvingKey struct {
 	}
 
 	G1Device struct {
-		A, B, K, Z			unsafe.Pointer
+		A, B, K, Z unsafe.Pointer
 	}
 
 	DomainDevice struct {
-		Twiddles, TwiddlesInv		unsafe.Pointer
-		CosetTable, CosetTableInv	unsafe.Pointer
+		Twiddles, TwiddlesInv     unsafe.Pointer
+		CosetTable, CosetTableInv unsafe.Pointer
 	}
 
 	// [β]₂, [δ]₂, [B(t)]₂
@@ -69,15 +69,15 @@ type ProvingKey struct {
 	}
 
 	G2Device struct {
-		B			unsafe.Pointer
+		B unsafe.Pointer
 	}
 
-	DenDevice		unsafe.Pointer
+	DenDevice unsafe.Pointer
 
 	// if InfinityA[i] == true, the point G1.A[i] == infinity
 	InfinityA, InfinityB     []bool
 	NbInfinityA, NbInfinityB uint64
-	InfinityPointIndicesK	 []int
+	InfinityPointIndicesK    []int
 
 	CommitmentKeys []pedersen.ProvingKey
 }
@@ -365,15 +365,15 @@ func Setup(r1cs *cs.R1CS, pk *ProvingKey, vk *VerifyingKey) error {
 
 func (pk *ProvingKey) setupDevicePointers() {
 	n := int(pk.Domain.Cardinality)
-	sizeBytes := n*fr.Bytes
-	
+	sizeBytes := n * fr.Bytes
+
 	/*************************  Start Domain Device Setup  ***************************/
 	copyCosetInvDone := make(chan unsafe.Pointer, 1)
 	copyCosetDone := make(chan unsafe.Pointer, 1)
 	copyDenDone := make(chan unsafe.Pointer, 1)
 	/*************************     CosetTableInv      ***************************/
 	go iciclegnark.CopyToDevice(pk.Domain.CosetTableInv, sizeBytes, copyCosetInvDone)
-	
+
 	/*************************     CosetTable      ***************************/
 	go iciclegnark.CopyToDevice(pk.Domain.CosetTable, sizeBytes, copyCosetDone)
 
@@ -382,7 +382,7 @@ func (pk *ProvingKey) setupDevicePointers() {
 	oneI.SetOne()
 	denI.Exp(pk.Domain.FrMultiplicativeGen, big.NewInt(int64(pk.Domain.Cardinality)))
 	denI.Sub(&denI, &oneI).Inverse(&denI)
-	
+
 	log2Size := int(math.Floor(math.Log2(float64(n))))
 	denIcicleArr := []fr.Element{denI}
 	for i := 0; i < log2Size; i++ {
@@ -391,17 +391,17 @@ func (pk *ProvingKey) setupDevicePointers() {
 	for i := 0; i < (n - int(math.Pow(2, float64(log2Size)))); i++ {
 		denIcicleArr = append(denIcicleArr, denI)
 	}
-	
+
 	go iciclegnark.CopyToDevice(denIcicleArr, sizeBytes, copyDenDone)
-	
+
 	/*************************     Twiddles and Twiddles Inv    ***************************/
 	om_selector := int(math.Log(float64(n)) / math.Log(2))
 	twiddlesInv_d_gen, twddles_err := icicle.GenerateTwiddles(n, om_selector, true)
-	
+
 	if twddles_err != nil {
 		fmt.Print(twiddlesInv_d_gen)
 	}
-	
+
 	twiddles_d_gen, twddles_err := icicle.GenerateTwiddles(n, om_selector, false)
 	if twddles_err != nil {
 		fmt.Print(twiddles_d_gen)
@@ -425,7 +425,7 @@ func (pk *ProvingKey) setupDevicePointers() {
 	pointsBytesB := len(pk.G1.B) * fp.Bytes * 2
 	copyBDone := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyPointsToDevice(pk.G1.B, pointsBytesB, copyBDone) // Make a function for points
-	
+
 	/*************************     K      ***************************/
 	var pointsNoInfinity []curve.G1Affine
 	for i, gnarkPoint := range pk.G1.K {
@@ -440,7 +440,7 @@ func (pk *ProvingKey) setupDevicePointers() {
 	copyKDone := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyPointsToDevice(pointsNoInfinity, pointsBytesK, copyKDone) // Make a function for points
 
-	/*************************     Z      ***************************/	
+	/*************************     Z      ***************************/
 	pointsBytesZ := len(pk.G1.Z) * fp.Bytes * 2
 	copyZDone := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyPointsToDevice(pk.G1.Z, pointsBytesZ, copyZDone) // Make a function for points
@@ -451,7 +451,7 @@ func (pk *ProvingKey) setupDevicePointers() {
 	pk.G1Device.K = <-copyKDone
 	pk.G1Device.Z = <-copyZDone
 
-	/*************************  Start G2 Device Setup  ***************************/	
+	/*************************  Start G2 Device Setup  ***************************/
 	pointsBytesB2 := len(pk.G2.B) * fp.Bytes * 4
 	copyG2BDone := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyG2PointsToDevice(pk.G2.B, pointsBytesB2, copyG2BDone) // Make a function for points
