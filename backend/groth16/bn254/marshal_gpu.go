@@ -1,4 +1,5 @@
-//go:build !gpu
+//go:build gpu
+// +build gpu
 
 // Copyright 2020 ConsenSys Software Inc.
 //
@@ -358,6 +359,8 @@ func (pk *ProvingKey) readFrom(r io.Reader, decOptions ...func(*curve.Decoder)) 
 			return n, err
 		}
 	}
+
+	pk.setupDevicePointers()
 
 	return n + dec.BytesRead(), nil
 }

@@ -600,6 +600,7 @@ func roundTripCheck(t *testing.T, from io.WriterTo, reconstructed io.ReaderFrom)
 		t.Fatal("couldn't deserialize", err)
 	}
 
+	// TODO: deepEqual with unsafe.Pointer doesn't work
 	if !reflect.DeepEqual(from, reconstructed) {
 		t.Fatal("reconstructed object don't match original")
 	}
@@ -621,6 +622,7 @@ func roundTripCheckRaw(t *testing.T, from gnarkio.WriterRawTo, reconstructed io.
 		t.Fatal("couldn't deserialize", err)
 	}
 
+	// TODO: deepEqual with unsafe.Pointer doesn't work
 	if !reflect.DeepEqual(from, reconstructed) {
 		t.Fatal("reconstructed object don't match original")
 	}
