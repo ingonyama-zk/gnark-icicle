@@ -20,7 +20,6 @@
 package groth16
 
 import (
-	"fmt"
 	"math/big"
 	"time"
 	"unsafe"
