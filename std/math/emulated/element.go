@@ -86,6 +86,10 @@ func (f *Field[T]) newInternalElement(limbs []frontend.Variable, overflow uint) 
 	return &Element[T]{Limbs: limbs, overflow: overflow, internal: true}
 }
 
+func (f *Field[T]) NewInternalElement(limbs []frontend.Variable, overflow uint) *Element[T] {
+	return &Element[T]{Limbs: limbs, overflow: overflow, internal: true}
+}
+
 // GnarkInitHook describes how to initialise the element.
 func (e *Element[T]) GnarkInitHook() {
 	if e.Limbs == nil {
