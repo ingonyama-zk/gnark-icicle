@@ -49,6 +49,10 @@ type Proof struct {
 
 // isValid ensures proof elements are in the correct subgroup
 func (proof *Proof) isValid() bool {
+	if proof == nil {
+		panic("proof is nil")
+	}
+
 	return proof.Ar.IsInSubGroup() && proof.Krs.IsInSubGroup() && proof.Bs.IsInSubGroup()
 }
 
@@ -74,7 +78,6 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	proof := &Proof{Commitments: make([]curve.G1Affine, len(commitmentInfo))}
 
 	solverOpts := opt.SolverOpts[:len(opt.SolverOpts):len(opt.SolverOpts)]
-
 	privateCommittedValues := make([][]fr.Element, len(commitmentInfo))
 	for i := range commitmentInfo {
 		solverOpts = append(solverOpts, solver.OverrideHint(commitmentInfo[i].HintID, func(i int) solver.Hint {

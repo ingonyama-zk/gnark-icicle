@@ -29,6 +29,9 @@ import (
 const HasIcicle = true
 
 func (pk *ProvingKey) setupDevicePointers() error {
+	log := logger.Logger().With().Str("position", "start").Logger()
+	log.Info().Msg("setupDevicePointers")
+
 	if pk.deviceInfo != nil {
 		return nil
 	}
@@ -40,6 +43,7 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	copyCosetInvDone := make(chan unsafe.Pointer, 1)
 	copyCosetDone := make(chan unsafe.Pointer, 1)
 	copyDenDone := make(chan unsafe.Pointer, 1)
+
 	/*************************     CosetTableInv      ***************************/
 	go iciclegnark.CopyToDevice(pk.Domain.CosetTableInv, sizeBytes, copyCosetInvDone)
 
@@ -65,6 +69,9 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	go iciclegnark.CopyToDevice(denIcicleArr, sizeBytes, copyDenDone)
 
 	/*************************     Twiddles and Twiddles Inv    ***************************/
+	log = logger.Logger().With().Str("position", "start").Logger()
+	log.Info().Msg("Generating Twiddle Factors")
+
 	twiddlesInv_d_gen, twddles_err := iciclegnark.GenerateTwiddleFactors(n, true)
 	if twddles_err != nil {
 		return twddles_err
@@ -126,6 +133,7 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	pk.G2Device.B = <-copyG2BDone
 
 	/*************************  End G2 Device Setup  ***************************/
+
 	return nil
 }
 

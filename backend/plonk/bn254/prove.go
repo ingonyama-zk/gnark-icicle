@@ -364,6 +364,10 @@ func (s *instance) setupGKRHints() {
 // solveConstraints computes the evaluation of the polynomials L, R, O
 // and sets x[id_L], x[id_R], x[id_O] in canonical form
 func (s *instance) solveConstraints() error {
+
+	// start benchmark
+	start := time.Now()
+
 	_solution, err := s.spr.Solve(s.fullWitness, s.opt.SolverOpts...)
 	if err != nil {
 		return err
@@ -392,6 +396,9 @@ func (s *instance) solveConstraints() error {
 		return err
 	}
 	close(s.chLRO)
+
+	fmt.Printf("solveConstraints() - Elapsed time: %v\n", time.Since(start))
+
 	return nil
 }
 

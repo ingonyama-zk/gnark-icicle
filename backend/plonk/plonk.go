@@ -21,7 +21,8 @@ package plonk
 
 import (
 	"io"
-
+	"fmt"
+	
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/kzg"
 	"github.com/consensys/gnark/backend"
@@ -127,6 +128,8 @@ func Setup(ccs constraint.ConstraintSystem, kzgSrs kzg.SRS) (ProvingKey, Verifyi
 //		internally, the solution vector to the SparseR1CS will be filled with random values which may impact benchmarking
 func Prove(ccs constraint.ConstraintSystem, pk ProvingKey, fullWitness witness.Witness, opts ...backend.ProverOption) (Proof, error) {
 
+	fmt.Print("hello world")
+	
 	switch tccs := ccs.(type) {
 	case *cs_bn254.SparseR1CS:
 		return plonk_bn254.Prove(tccs, pk.(*plonk_bn254.ProvingKey), fullWitness, opts...)
