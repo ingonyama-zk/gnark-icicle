@@ -5,6 +5,8 @@ import (
 
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 	cs "github.com/consensys/gnark/constraint/bn254"
+	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
+
 )
 
 type deviceInfo struct {
@@ -23,12 +25,16 @@ type deviceInfo struct {
 }
 
 type ProvingKey struct {
-	plonk_bn254.ProvingKey
+	*plonk_bn254.ProvingKey
 	*deviceInfo
 }
 
-// TODO add plonk setup
-func Setup(r1cs *cs.R1CS, pk *ProvingKey, vk *plonk_bn254.VerifyingKey) error {
-	return plonk_bn254.Setup(r1cs, &pk.ProvingKey, vk)
+func Setup(spr *cs.SparseR1CS, kzgSrs kzg.SRS) (*ProvingKey, *plonk_bn254.VerifyingKey, error) {
+	pk, vk, err := plonk_bn254.Setup(spr, kzgSrs)
+	if err != nil {
+		return nil, nil, err
+	}
+	newPk := &ProvingKey{pk, nil}
+	return newPk, vk, nil
 }
 
