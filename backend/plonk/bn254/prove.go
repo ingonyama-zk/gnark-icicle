@@ -17,6 +17,7 @@
 package plonk
 
 import (
+	"os"
 	"context"
 	"errors"
 	"fmt"
@@ -113,7 +114,6 @@ type Proof struct {
 }
 
 func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...backend.ProverOption) (*Proof, error) {
-
 	log := logger.Logger().With().
 		Str("curve", spr.CurveID().String()).
 		Int("nbConstraints", spr.GetNbConstraints()).
@@ -126,7 +126,7 @@ func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts
 	}
 
 	start := time.Now()
-
+	
 	// init instance
 	g, ctx := errgroup.WithContext(context.Background())
 	instance, err := newInstance(ctx, spr, pk, fullWitness, &opt)
@@ -135,37 +135,37 @@ func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts
 	}
 
 	// solve constraints
-	g.Go(instance.solveConstraints)
+	g.Go(bench(instance.solveConstraints, "solveConstraints"))
 
 	// compute numerator data
-	g.Go(instance.initComputeNumerator)
+	g.Go(bench(instance.initComputeNumerator, "initComputeNumerator"))
 
 	// complete qk
-	g.Go(instance.completeQk)
+	g.Go(bench(instance.completeQk, "completeQk"))
 
 	// init blinding polynomials
-	g.Go(instance.initBlindingPolynomials)
+	g.Go(bench(instance.initBlindingPolynomials, "initBlindingPolynomials"))
 
 	// derive gamma, beta (copy constraint)
-	g.Go(instance.deriveGammaAndBeta)
+	g.Go(bench(instance.deriveGammaAndBeta, "deriveGammaAndBeta"))
 
 	// compute accumulating ratio for the copy constraint
-	g.Go(instance.buildRatioCopyConstraint)
+	g.Go(bench(instance.buildRatioCopyConstraint, "buildRatioCopyConstraint"))
 
 	// compute h
-	g.Go(instance.evaluateConstraints)
+	g.Go(bench(instance.evaluateConstraints, "evaluateConstraints"))
 
 	// open Z (blinded) at ωζ (proof.ZShiftedOpening)
-	g.Go(instance.openZ)
+	g.Go(bench(instance.openZ, "openZ"))
 
 	// fold the commitment to H ([H₀] + ζᵐ⁺²*[H₁] + ζ²⁽ᵐ⁺²⁾[H₂])
-	g.Go(instance.foldH)
+	g.Go(bench(instance.foldH, "foldH"))
 
 	// linearized polynomial
-	g.Go(instance.computeLinearizedPolynomial)
+	g.Go(bench(instance.computeLinearizedPolynomial, "computeLinearizedPolynomial"))
 
 	// Batch opening
-	g.Go(instance.batchOpening)
+	g.Go(bench(instance.batchOpening, "batchOpening"))
 
 	if err := g.Wait(); err != nil {
 		return nil, err
@@ -225,6 +225,36 @@ type instance struct {
 	chFoldedH,
 	chNumeratorInit,
 	chGammaBeta chan struct{}
+}
+
+func bench(fn func() error, name string) func() error {
+	icicle := false 
+
+	suffix := ""
+	if icicle {
+		suffix = "_with_icicle"
+	} else {
+		suffix = "_without_icicle"
+	}
+	// get current date
+	currentDate := time.Now().Format("2006-01-02")
+
+    return func() error {
+        start := time.Now()
+        err := fn()
+        if err != nil {
+            return err
+        }
+		filename := fmt.Sprintf("/home/simon/Ingonyama/gnark-plonky2-verifier/benchmarks/benchmarks_%s%s.txt", currentDate, suffix)
+		file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+        if err != nil {
+            return err
+   }
+        defer file.Close()
+        
+        _, err = fmt.Fprintf(file, "%s - Elapsed time: %s\n", name, time.Since(start))
+        return err
+    }
 }
 
 func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts *backend.ProverConfig) (*instance, error) {
@@ -364,10 +394,6 @@ func (s *instance) setupGKRHints() {
 // solveConstraints computes the evaluation of the polynomials L, R, O
 // and sets x[id_L], x[id_R], x[id_O] in canonical form
 func (s *instance) solveConstraints() error {
-
-	// start benchmark
-	start := time.Now()
-
 	_solution, err := s.spr.Solve(s.fullWitness, s.opt.SolverOpts...)
 	if err != nil {
 		return err
@@ -396,9 +422,6 @@ func (s *instance) solveConstraints() error {
 		return err
 	}
 	close(s.chLRO)
-
-	fmt.Printf("solveConstraints() - Elapsed time: %v\n", time.Since(start))
-
 	return nil
 }
 
