@@ -106,6 +106,11 @@ type ProvingKey struct {
 	Domain [2]fft.Domain
 }
 
+// returns Trace (needed for Icicle)
+func (pk *ProvingKey) GetTrace() Trace {
+ 	return pk.trace
+}
+
 // TODO modify the signature to receive the SRS in Lagrange form (optional argument ?)
 func Setup(spr *cs.SparseR1CS, kzgSrs kzg.SRS) (*ProvingKey, *VerifyingKey, error) {
 
