@@ -101,6 +101,9 @@ func Setup(ccs constraint.ConstraintSystem, kzgSrs kzg.SRS) (ProvingKey, Verifyi
 
 	switch tccs := ccs.(type) {
 	case *cs_bn254.SparseR1CS:
+		if icicle_bn254.HasIcicle {
+			return icicle_bn254.Setup(tccs, *kzgSrs.(*kzg_bn254.SRS))
+		}
 		return plonk_bn254.Setup(tccs, *kzgSrs.(*kzg_bn254.SRS))
 	case *cs_bls12381.SparseR1CS:
 		return plonk_bls12381.Setup(tccs, *kzgSrs.(*kzg_bls12381.SRS))
@@ -131,7 +134,7 @@ func Prove(ccs constraint.ConstraintSystem, pk ProvingKey, fullWitness witness.W
 
 	case *cs_bn254.SparseR1CS:
 		if icicle_bn254.HasIcicle {
-			return icicle_bn254.Prove(tccs, pk.(*plonk_bn254.ProvingKey), fullWitness, opts...)
+			return icicle_bn254.Prove(tccs, pk.(*icicle_bn254.ProvingKey), fullWitness, opts...)
 		}
 		return plonk_bn254.Prove(tccs, pk.(*plonk_bn254.ProvingKey), fullWitness, opts...)
 
@@ -249,6 +252,9 @@ func NewProvingKey(curveID ecc.ID) ProvingKey {
 	switch curveID {
 	case ecc.BN254:
 		pk = &plonk_bn254.ProvingKey{}
+		if icicle_bn254.HasIcicle {
+			pk = &icicle_bn254.ProvingKey{}
+		}
 	case ecc.BLS12_377:
 		pk = &plonk_bls12377.ProvingKey{}
 	case ecc.BLS12_381:
