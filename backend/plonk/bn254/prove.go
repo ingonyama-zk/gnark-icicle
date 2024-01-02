@@ -121,6 +121,7 @@ func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts
 
 	// parse the options
 	opt, err := backend.NewProverConfig(opts...)
+	fmt.Print(opt)
 	if err != nil {
 		return nil, fmt.Errorf("get prover options: %w", err)
 	}
