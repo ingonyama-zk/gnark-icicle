@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 
-	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/iop"
@@ -77,26 +77,6 @@ const (
 	order_blinding_O = 1
 	order_blinding_Z = 2
 )
-
-type Proof struct {
-
-	// Commitments to the solution vectors
-	LRO [3]kzg.Digest
-
-	// Commitment to Z, the permutation polynomial
-	Z kzg.Digest
-
-	// Commitments to h1, h2, h3 such that h = h1 + Xh2 + X**2h3 is the quotient polynomial
-	H [3]kzg.Digest
-
-	Bsb22Commitments []kzg.Digest
-
-	// Batch opening proof of h1 + zeta*h2 + zeta**2h3, linearizedPolynomial, l, r, o, s1, s2, qCPrime
-	BatchedProof kzg.BatchOpeningProof
-
-	// Opening proof of Z at zeta*mu
-	ZShiftedOpening kzg.OpeningProof
-}
 
 func (pk *ProvingKey) setupDevicePointers() error {
 	log := logger.Logger().With().Str("position", "start").Logger()
@@ -229,7 +209,7 @@ func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts
 	}
 
 	log.Debug().Dur("took", time.Since(start)).Msg("prover done")
-	return &plonk_bn254.Proof{}, nil
+	return instance.proof, nil
 }
 
 // represents a Prover instance
@@ -318,6 +298,45 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *ProvingKey, fullWi
 	return &s, nil
 }
 
+func (s *instance) initComputeNumerator() error {
+	n := s.pk.Domain[0].Cardinality
+	s.cres = make([]fr.Element, s.pk.Domain[1].Cardinality)
+	s.twiddles0 = make([]fr.Element, n)
+	if n == 1 {
+		// edge case
+		s.twiddles0[0].SetOne()
+	} else {
+		copy(s.twiddles0, s.pk.Domain[0].Twiddles[0])
+		for i := len(s.pk.Domain[0].Twiddles[0]); i < len(s.twiddles0); i++ {
+			s.twiddles0[i].Mul(&s.twiddles0[i-1], &s.twiddles0[1])
+		}
+	}
+
+	cosetTable := s.pk.Domain[0].CosetTable
+	twiddles := s.pk.Domain[1].Twiddles[0][:n]
+
+	s.cosetTableRev = make([]fr.Element, len(cosetTable))
+	copy(s.cosetTableRev, cosetTable)
+	fft.BitReverse(s.cosetTableRev)
+
+	s.twiddlesRev = make([]fr.Element, len(twiddles))
+	copy(s.twiddlesRev, twiddles)
+	fft.BitReverse(s.twiddlesRev)
+
+	close(s.chNumeratorInit)
+
+	return nil
+}
+
+func (s *instance) initBlindingPolynomials() error {
+	s.bp[id_Bl] = getRandomPolynomial(order_blinding_L)
+	s.bp[id_Br] = getRandomPolynomial(order_blinding_R)
+	s.bp[id_Bo] = getRandomPolynomial(order_blinding_O)
+	s.bp[id_Bz] = getRandomPolynomial(order_blinding_Z)
+	close(s.chbp)
+	return nil
+}
+
 func (s *instance) initBSB22Commitments() {
 	s.commitmentInfo = s.spr.CommitmentInfo.(constraint.PlonkCommitments)
 	s.commitmentVal = make([]fr.Element, len(s.commitmentInfo)) // TODO @Tabaie get rid of this
@@ -331,16 +350,8 @@ func (s *instance) initBSB22Commitments() {
 	}
 }
 
-func (s *instance) setupGKRHints() {
-	if s.spr.GkrInfo.Is() {
-		var gkrData cs.GkrSolvingData
-		s.opt.SolverOpts = append(s.opt.SolverOpts,
-			solver.OverrideHint(s.spr.GkrInfo.SolveHintID, cs.GkrSolveHint(s.spr.GkrInfo, &gkrData)),
-			solver.OverrideHint(s.spr.GkrInfo.ProveHintID, cs.GkrProveHint(s.spr.GkrInfo.HashName, &gkrData)))
-	}
-}
-
 // Computing and verifying Bsb22 multi-commits explained in https://hackmd.io/x8KsadW3RRyX7YTCFJIkHg
+// TODO ICICLE
 func (s *instance) bsb22Hint(commDepth int) solver.Hint {
 	return func(_ *big.Int, ins, outs []*big.Int) error {
 		var err error
@@ -360,7 +371,8 @@ func (s *instance) bsb22Hint(commDepth int) solver.Hint {
 			return err
 		}
 		s.cCommitments[commDepth] = iop.NewPolynomial(&committedValues, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
-		if s.proof.Bsb22Commitments[commDepth], err = kzg.Commit(s.cCommitments[commDepth].Coefficients(), s.pk.KzgLagrange); err != nil {
+		// TODO ICICLE
+		if s.proof.Bsb22Commitments[commDepth], err = Commit(s.cCommitments[commDepth].Coefficients(), s.pk.KzgLagrange); err != nil {
 			return err
 		}
 		s.cCommitments[commDepth].ToCanonical(&s.pk.Domain[0]).ToRegular()
@@ -372,10 +384,19 @@ func (s *instance) bsb22Hint(commDepth int) solver.Hint {
 		if s.htfFunc.Size() < fr.Bytes {
 			nbBuf = s.htfFunc.Size()
 		}
-		res.SetBytes(hashBts[:nbBuf])
+		res.SetBytes(hashBts[:nbBuf]) // TODO @Tabaie use CommitmentIndex for this; create a new variable CommitmentConstraintIndex for other uses
 		res.BigInt(outs[0])
 
 		return nil
+	}
+}
+
+func (s *instance) setupGKRHints() {
+	if s.spr.GkrInfo.Is() {
+		var gkrData cs.GkrSolvingData
+		s.opt.SolverOpts = append(s.opt.SolverOpts,
+			solver.OverrideHint(s.spr.GkrInfo.SolveHintID, cs.GkrSolveHint(s.spr.GkrInfo, &gkrData)),
+			solver.OverrideHint(s.spr.GkrInfo.ProveHintID, cs.GkrProveHint(s.spr.GkrInfo.HashName, &gkrData)))
 	}
 }
 
@@ -386,20 +407,13 @@ func (s *instance) solveConstraints() error {
 	if err != nil {
 		return err
 	}
-
-	// Type assertion to SparseR1CSSolution.
 	solution := _solution.(*cs.SparseR1CSSolution)
-
-	// The solutions are converted into the Fr (field element) type.
 	evaluationLDomainSmall := []fr.Element(solution.L)
 	evaluationRDomainSmall := []fr.Element(solution.R)
 	evaluationODomainSmall := []fr.Element(solution.O)
 	var wg sync.WaitGroup
-	wg.Add(2) // There are two goroutines hence we Add(2).
-
-	// Parallel execution of creation of  the polynomials that represent L and R wires.
+	wg.Add(2)
 	go func() {
-		// Creating the polynomial after converting the solutions into Lagrange form.
 		s.x[id_L] = iop.NewPolynomial(&evaluationLDomainSmall, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
 		wg.Done()
 	}()
@@ -408,8 +422,8 @@ func (s *instance) solveConstraints() error {
 		wg.Done()
 	}()
 
-	// The O polynomial is created on the main thread.
 	s.x[id_O] = iop.NewPolynomial(&evaluationODomainSmall, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
+
 	wg.Wait()
 
 	// commit to l, r, o and add blinding factors
@@ -417,63 +431,11 @@ func (s *instance) solveConstraints() error {
 		return err
 	}
 	close(s.chLRO)
-
-	return nil
-}
-
-// uses twiddles may be able to optimize with icicle
-func (s *instance) initComputeNumerator() error {
-
-	// Get smaller domain size.
-	n := s.pk.Domain[0].Cardinality
-
-	// Prepares an array for calculating the numerator.
-	s.cres = make([]fr.Element, s.pk.Domain[1].Cardinality)
-
-	// Reserve space for twiddles for the smaller domain.
-	s.twiddles0 = make([]fr.Element, n)
-
-	// If smaller domain has only 1 point, set to 1.
-	if n == 1 {
-		// edge case
-		s.twiddles0[0].SetOne()
-	} else {
-		// Copy predefined twiddles for smaller domain.
-		copy(s.twiddles0, s.pk.Domain[0].Twiddles[0])
-
-		// Extend twiddles for smaller domain.
-		for i := len(s.pk.Domain[0].Twiddles[0]); i < len(s.twiddles0); i++ {
-			s.twiddles0[i].Mul(&s.twiddles0[i-1], &s.twiddles0[1])
-		}
-	}
-
-	// Get coset (sample points) table.
-	cosetTable := s.pk.Domain[0].CosetTable
-
-	// Get twiddles for larger domain.
-	twiddles := s.pk.Domain[1].Twiddles[0][:n]
-
-	// Reverse the coset table and store.
-	s.cosetTableRev = make([]fr.Element, len(cosetTable))
-	copy(s.cosetTableRev, cosetTable)
-	fft.BitReverse(s.cosetTableRev)
-
-	// Reverse the twiddles and store.
-	s.twiddlesRev = make([]fr.Element, len(twiddles))
-	copy(s.twiddlesRev, twiddles)
-	fft.BitReverse(s.twiddlesRev)
-
-	// Notify the end of initialization.
-	close(s.chNumeratorInit)
-
 	return nil
 }
 
 func (s *instance) completeQk() error {
-	// hack need to import properly
-	trace := s.pk.GetTrace()
-
-	qk := trace.Qk.Clone().ToLagrange(&s.pk.Domain[0]).ToRegular()
+	qk := s.pk.GetTrace().Qk.Clone().ToLagrange(&s.pk.Domain[0]).ToRegular()
 	qkCoeffs := qk.Coefficients()
 
 	wWitness, ok := s.fullWitness.Vector().(fr.Vector)
@@ -500,46 +462,6 @@ func (s *instance) completeQk() error {
 	return nil
 }
 
-func (s *instance) initBlindingPolynomials() error {
-	s.bp[id_Bl] = getRandomPolynomial(order_blinding_L)
-	s.bp[id_Br] = getRandomPolynomial(order_blinding_R)
-	s.bp[id_Bo] = getRandomPolynomial(order_blinding_O)
-	s.bp[id_Bz] = getRandomPolynomial(order_blinding_Z)
-	close(s.chbp)
-	return nil
-}
-
-func (s *instance) deriveGammaAndBeta() error {
-	return nil
-}
-
-func (s *instance) buildRatioCopyConstraint() error {
-	return nil
-}
-
-func (s *instance) evaluateConstraints() error {
-	return nil
-}
-
-func (s *instance) openZ() error {
-	return nil
-}
-
-func (s *instance) foldH() error {
-	return nil
-}
-
-func (s *instance) computeLinearizedPolynomial() error {
-	return nil
-}
-
-func (s *instance) batchOpening() error {
-	return nil
-}
-
-// Commits to the evaluation of three specific wire polynomials (`id_L`, `id_R`, `id_O`)
-// at random point, along with their according blinding polynomials
-// (`id_Bl`, `id_Br`, `id_Bo`).
 func (s *instance) commitToLRO() error {
 	// wait for blinding polynomials to be initialized or context to be done
 	select {
@@ -550,26 +472,57 @@ func (s *instance) commitToLRO() error {
 
 	g := new(errgroup.Group)
 
-	// commit to the L wire polynomial and its blinding polynomial in parallel.
 	g.Go(func() (err error) {
 		s.proof.LRO[0], err = s.commitToPolyAndBlinding(s.x[id_L], s.bp[id_Bl])
 		return
 	})
 
-	// commit to the R wire polynomial and its blinding polynomial in parallel.
 	g.Go(func() (err error) {
 		s.proof.LRO[1], err = s.commitToPolyAndBlinding(s.x[id_R], s.bp[id_Br])
 		return
 	})
 
-	// commit to the O wire polynomial and its blinding polynomial in parallel.
 	g.Go(func() (err error) {
 		s.proof.LRO[2], err = s.commitToPolyAndBlinding(s.x[id_O], s.bp[id_Bo])
 		return
 	})
 
-	// wait until all goroutines in the group have completed their tasks, and finally return.
 	return g.Wait()
+}
+
+// deriveGammaAndBeta (copy constraint)
+func (s *instance) deriveGammaAndBeta() error {
+	wWitness, ok := s.fullWitness.Vector().(fr.Vector)
+	if !ok {
+		return witness.ErrInvalidWitness
+	}
+
+	if err := bindPublicData(&s.fs, "gamma", s.pk.Vk, wWitness[:len(s.spr.Public)]); err != nil {
+		return err
+	}
+
+	// wait for LRO to be committed
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chLRO:
+	}
+
+	gamma, err := deriveRandomness(&s.fs, "gamma", &s.proof.LRO[0], &s.proof.LRO[1], &s.proof.LRO[2])
+	if err != nil {
+		return err
+	}
+
+	bbeta, err := s.fs.ComputeChallenge("beta")
+	if err != nil {
+		return err
+	}
+	s.gamma = gamma
+	s.beta.SetBytes(bbeta)
+
+	close(s.chGammaBeta)
+
+	return nil
 }
 
 // commitToPolyAndBlinding computes the KZG commitment of a polynomial p
@@ -578,7 +531,8 @@ func (s *instance) commitToLRO() error {
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 
-	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+	// TODO ICICLE
+	commit, err = Commit(p.Coefficients(), s.pk.KzgLagrange)
 
 	// we add in the blinding contribution
 	n := int(s.pk.Domain[0].Cardinality)
@@ -588,82 +542,345 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	return
 }
 
-// commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
-func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
-	cp := b.Coefficients()
-	np := b.Size()
+func (s *instance) deriveAlpha() (err error) {
+	alphaDeps := make([]*curve.G1Affine, len(s.proof.Bsb22Commitments)+1)
+	for i := range s.proof.Bsb22Commitments {
+		alphaDeps[i] = &s.proof.Bsb22Commitments[i]
+	}
+	alphaDeps[len(alphaDeps)-1] = &s.proof.Z
+	s.alpha, err = deriveRandomness(&s.fs, "alpha", alphaDeps...)
+	return err
+}
 
-	// lo
-	sizeBytes := len(key.G1[:np]) * fp.Bytes * 2
+func (s *instance) deriveZeta() (err error) {
+	s.zeta, err = deriveRandomness(&s.fs, "zeta", &s.proof.H[0], &s.proof.H[1], &s.proof.H[2])
+	return
+}
 
-	copyKeyDone := make(chan unsafe.Pointer, 1)
-	go iciclegnark.CopyPointsToDevice(key.G1[:np], sizeBytes, copyKeyDone)
-	keyDevice := <-copyKeyDone
-	keyDeviceValue := iciclegnark.OnDeviceData{
-		P:    keyDevice,
-		Size: sizeBytes,
+// evaluateConstraints computes H
+func (s *instance) evaluateConstraints() (err error) {
+	// clone polys from the proving key.
+	s.x[id_Ql] = s.pk.GetTrace().Ql.Clone()
+	s.x[id_Qr] = s.pk.GetTrace().Qr.Clone()
+	s.x[id_Qm] = s.pk.GetTrace().Qm.Clone()
+	s.x[id_Qo] = s.pk.GetTrace().Qo.Clone()
+	s.x[id_S1] = s.pk.GetTrace().S1.Clone()
+	s.x[id_S2] = s.pk.GetTrace().S2.Clone()
+	s.x[id_S3] = s.pk.GetTrace().S3.Clone()
+
+	for i := 0; i < len(s.commitmentInfo); i++ {
+		s.x[id_Qci+2*i] = s.pk.GetTrace().Qcp[i].Clone()
 	}
 
-	copyCpDone := make(chan unsafe.Pointer, 1)
-	go iciclegnark.CopyToDevice(cp, sizeBytes, copyCpDone)
-	cpDevice := <-copyCpDone
+	n := s.pk.Domain[0].Cardinality
+	lone := make([]fr.Element, n)
+	lone[0].SetOne()
 
-	// TODO why z is zero?
-	tmpVal, _, err := iciclegnark.MsmOnDevice(keyDeviceValue.P, cpDevice, keyDeviceValue.Size, true)
+	// wait for solver to be done
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chLRO:
+	}
+
+	for i := 0; i < len(s.commitmentInfo); i++ {
+		s.x[id_Qci+2*i+1] = s.cCommitments[i].Clone()
+	}
+
+	// wait for Z to be committed or context done
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chZ:
+	}
+
+	// derive alpha
+	if err = s.deriveAlpha(); err != nil {
+		return err
+	}
+
+	// TODO complete waste of memory find another way to do that
+	identity := make([]fr.Element, n)
+	identity[1].Set(&s.beta)
+
+	s.x[id_ID] = iop.NewPolynomial(&identity, iop.Form{Basis: iop.Canonical, Layout: iop.Regular})
+	s.x[id_LOne] = iop.NewPolynomial(&lone, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
+	s.x[id_ZS] = s.x[id_Z].ShallowClone().Shift(1)
+
+	numerator, err := s.computeNumerator()
 	if err != nil {
-		fmt.Print("error")
-	}
-	var tmpAffinePoint curve.G1Affine
-	tmpAffinePoint.FromJacobian(&tmpVal)
-
-	// Hi
-	copyResDone := make(chan unsafe.Pointer, 1)
-
-	sizeBytes = len(key.G1[:np+n]) * fp.Bytes * 2
-	go iciclegnark.CopyPointsToDevice(key.G1[:np+n], sizeBytes, copyResDone)
-
-	resDevice := <-copyResDone
-
-	resDeviceValue := iciclegnark.OnDeviceData{
-		P:    resDevice,
-		Size: sizeBytes,
+		return err
 	}
 
-	resVal, _, err := iciclegnark.MsmOnDevice(resDeviceValue.P, cpDevice, resDeviceValue.Size, true)
+	s.h, err = divideByXMinusOne(numerator, [2]*fft.Domain{&s.pk.Domain[0], &s.pk.Domain[1]})
 	if err != nil {
-		fmt.Print("error")
+		return err
 	}
-	var resAffinePoint curve.G1Affine
-	resAffinePoint.FromJacobian(&resVal)
 
-	resAffinePoint.Sub(&resAffinePoint, &tmpAffinePoint)
+	// commit to h
+	if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg); err != nil {
+		return err
+	}
 
-	// do we need this
+	if err := s.deriveZeta(); err != nil {
+		return err
+	}
+
+	// wait for clean up tasks to be done
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chRestoreLRO:
+	}
+
+	close(s.chH)
+
+	return nil
+}
+
+func (s *instance) buildRatioCopyConstraint() (err error) {
+	// wait for gamma and beta to be derived (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chGammaBeta:
+	}
+
+	// TODO @gbotrel having iop.BuildRatioCopyConstraint return something
+	// with capacity = len() + 4 would avoid extra alloc / copy during openZ
+	s.x[id_Z], err = iop.BuildRatioCopyConstraint(
+		[]*iop.Polynomial{
+			s.x[id_L],
+			s.x[id_R],
+			s.x[id_O],
+		},
+		s.pk.GetTrace().S,
+		s.beta,
+		s.gamma,
+		iop.Form{Basis: iop.Lagrange, Layout: iop.Regular},
+		&s.pk.Domain[0],
+	)
+	if err != nil {
+		return err
+	}
+
+	// commit to the blinded version of z
+	s.proof.Z, err = s.commitToPolyAndBlinding(s.x[id_Z], s.bp[id_Bz])
+
+	close(s.chZ)
+
+	return
+}
+
+// open Z (blinded) at ωζ
+func (s *instance) openZ() (err error) {
+	// wait for H to be committed and zeta to be derived (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chH:
+	}
+	var zetaShifted fr.Element
+	zetaShifted.Mul(&s.zeta, &s.pk.Vk.Generator)
+	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
+	// open z at zeta
+	// TODO use ICICLE here to accelerate nested commit function
+	s.proof.ZShiftedOpening, err = kzg.Open(s.blindedZ, zetaShifted, s.pk.Kzg)
+	if err != nil {
+		return err
+	}
+	close(s.chZOpening)
+	return nil
+}
+
+func (s *instance) h1() []fr.Element {
+	h1 := s.h.Coefficients()[:s.pk.Domain[0].Cardinality+2]
+	return h1
+}
+
+func (s *instance) h2() []fr.Element {
+	h2 := s.h.Coefficients()[s.pk.Domain[0].Cardinality+2 : 2*(s.pk.Domain[0].Cardinality+2)]
+	return h2
+}
+
+func (s *instance) h3() []fr.Element {
+	h3 := s.h.Coefficients()[2*(s.pk.Domain[0].Cardinality+2) : 3*(s.pk.Domain[0].Cardinality+2)]
+	return h3
+}
+
+// fold the commitment to H ([H₀] + ζᵐ⁺²*[H₁] + ζ²⁽ᵐ⁺²⁾[H₂])
+// TODO use ICICLE here to accelerate
+func (s *instance) foldH() error {
+	// wait for H to be committed and zeta to be derived (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chH:
+	}
+	var n big.Int
+	n.SetUint64(s.pk.Domain[0].Cardinality + 2)
+
+	var zetaPowerNplusTwo fr.Element
+	zetaPowerNplusTwo.Exp(s.zeta, &n)
+	zetaPowerNplusTwo.BigInt(&n)
+
+	// TODO use ICICLE here to accellerate
+	s.foldedHDigest.ScalarMultiplication(&s.proof.H[2], &n)
+	s.foldedHDigest.Add(&s.foldedHDigest, &s.proof.H[1])       // ζᵐ⁺²*Comm(h3)
+	s.foldedHDigest.ScalarMultiplication(&s.foldedHDigest, &n) // ζ²⁽ᵐ⁺²⁾*Comm(h3) + ζᵐ⁺²*Comm(h2)
+	s.foldedHDigest.Add(&s.foldedHDigest, &s.proof.H[0])
+
+	// fold H (H₀ + ζᵐ⁺²*H₁ + ζ²⁽ᵐ⁺²⁾H₂))
+	h1 := s.h1()
+	h2 := s.h2()
+	s.foldedH = s.h3()
+
+	for i := 0; i < int(s.pk.Domain[0].Cardinality)+2; i++ {
+		s.foldedH[i].
+			Mul(&s.foldedH[i], &zetaPowerNplusTwo).
+			Add(&s.foldedH[i], &h2[i]).
+			Mul(&s.foldedH[i], &zetaPowerNplusTwo).
+			Add(&s.foldedH[i], &h1[i])
+	}
+
+	close(s.chFoldedH)
+
+	return nil
+}
+
+// TODO use ICICLE here to accelerate nested commit function
+func (s *instance) computeLinearizedPolynomial() error {
+
+	// wait for H to be committed and zeta to be derived (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chH:
+	}
+
+	qcpzeta := make([]fr.Element, len(s.commitmentInfo))
+	var blzeta, brzeta, bozeta fr.Element
+	var wg sync.WaitGroup
+	wg.Add(3 + len(s.commitmentInfo))
+
+	for i := 0; i < len(s.commitmentInfo); i++ {
+		go func(i int) {
+			qcpzeta[i] = s.pk.GetTrace().Qcp[i].Evaluate(s.zeta)
+			wg.Done()
+		}(i)
+	}
+
 	go func() {
-		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmp))
-		iciclegnark.FreeDevicePointer(unsafe.Pointer(&res))
+		blzeta = evaluateBlinded(s.x[id_L], s.bp[id_Bl], s.zeta)
+		wg.Done()
 	}()
 
-	return res
-}
+	go func() {
+		brzeta = evaluateBlinded(s.x[id_R], s.bp[id_Br], s.zeta)
+		wg.Done()
+	}()
 
-// return a random polynomial of degree n, if n==-1 cancel the blinding
-func getRandomPolynomial(n int) *iop.Polynomial {
-	var a []fr.Element
-	if n == -1 {
-		a := make([]fr.Element, 1)
-		a[0].SetZero()
-	} else {
-		a = make([]fr.Element, n+1)
-		for i := 0; i <= n; i++ {
-			a[i].SetRandom()
-		}
+	go func() {
+		bozeta = evaluateBlinded(s.x[id_O], s.bp[id_Bo], s.zeta)
+		wg.Done()
+	}()
+
+	// wait for Z to be opened at zeta (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chZOpening:
 	}
-	res := iop.NewPolynomial(&a, iop.Form{
-		Basis: iop.Canonical, Layout: iop.Regular})
-	return res
+	bzuzeta := s.proof.ZShiftedOpening.ClaimedValue
+
+	wg.Wait()
+
+	s.linearizedPolynomial = computeLinearizedPolynomial(
+		blzeta,
+		brzeta,
+		bozeta,
+		s.alpha,
+		s.beta,
+		s.gamma,
+		s.zeta,
+		bzuzeta,
+		qcpzeta,
+		s.blindedZ,
+		coefficients(s.cCommitments),
+		s.pk,
+	)
+
+	var err error
+	// TODO accelerate with ICICLE
+	s.linearizedPolynomialDigest, err = Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	if err != nil {
+		return err
+	}
+	close(s.chLinearizedPolynomial)
+	return nil
 }
 
+func (s *instance) batchOpening() error {
+	polysQcp := coefficients(s.pk.GetTrace().Qcp)
+	polysToOpen := make([][]fr.Element, 7+len(polysQcp))
+	copy(polysToOpen[7:], polysQcp)
+
+	// wait for LRO to be committed (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chLRO:
+	}
+
+	// wait for foldedH to be computed (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chFoldedH:
+	}
+
+	// wait for linearizedPolynomial to be computed (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return errContextDone
+	case <-s.chLinearizedPolynomial:
+	}
+
+	polysToOpen[0] = s.foldedH
+	polysToOpen[1] = s.linearizedPolynomial
+	polysToOpen[2] = getBlindedCoefficients(s.x[id_L], s.bp[id_Bl])
+	polysToOpen[3] = getBlindedCoefficients(s.x[id_R], s.bp[id_Br])
+	polysToOpen[4] = getBlindedCoefficients(s.x[id_O], s.bp[id_Bo])
+	polysToOpen[5] = s.pk.GetTrace().S1.Coefficients()
+	polysToOpen[6] = s.pk.GetTrace().S2.Coefficients()
+
+	digestsToOpen := make([]curve.G1Affine, len(s.pk.Vk.Qcp)+7)
+	copy(digestsToOpen[7:], s.pk.Vk.Qcp)
+
+	digestsToOpen[0] = s.foldedHDigest
+	digestsToOpen[1] = s.linearizedPolynomialDigest
+	digestsToOpen[2] = s.proof.LRO[0]
+	digestsToOpen[3] = s.proof.LRO[1]
+	digestsToOpen[4] = s.proof.LRO[2]
+	digestsToOpen[5] = s.pk.Vk.S[0]
+	digestsToOpen[6] = s.pk.Vk.S[1]
+
+	var err error
+	// TODO ICICLE this section can be accelerated bc kzg commit is called
+	s.proof.BatchedProof, err = kzg.BatchOpenSinglePoint(
+		polysToOpen,
+		digestsToOpen,
+		s.zeta,
+		s.kzgFoldingHash,
+		s.pk.Kzg,
+		s.proof.ZShiftedOpening.ClaimedValue.Marshal(),
+	)
+
+	return err
+}
+
+// evaluate the full set of constraints, all polynomials in x are back in
+// canonical regular form at the end
 func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	n := s.pk.Domain[0].Cardinality
 
@@ -935,6 +1152,347 @@ func scalePowers(p *iop.Polynomial, w fr.Element) {
 		cp[i].Mul(&cp[i], &acc)
 		acc.Mul(&acc, &w)
 	}
+}
+
+func evaluateBlinded(p, bp *iop.Polynomial, zeta fr.Element) fr.Element {
+	// Get the size of the polynomial
+	n := big.NewInt(int64(p.Size()))
+
+	var pEvaluatedAtZeta fr.Element
+
+	// Evaluate the polynomial and blinded polynomial at zeta
+	chP := make(chan struct{}, 1)
+	go func() {
+		pEvaluatedAtZeta = p.Evaluate(zeta)
+		close(chP)
+	}()
+
+	bpEvaluatedAtZeta := bp.Evaluate(zeta)
+
+	// Multiply the evaluated blinded polynomial by tempElement
+	var t fr.Element
+	one := fr.One()
+	t.Exp(zeta, n).Sub(&t, &one)
+	bpEvaluatedAtZeta.Mul(&bpEvaluatedAtZeta, &t)
+
+	// Add the evaluated polynomial and the evaluated blinded polynomial
+	<-chP
+	pEvaluatedAtZeta.Add(&pEvaluatedAtZeta, &bpEvaluatedAtZeta)
+
+	// Return the result
+	return pEvaluatedAtZeta
+}
+
+// /!\ modifies p's underlying array of coefficients, in particular the size changes
+func getBlindedCoefficients(p, bp *iop.Polynomial) []fr.Element {
+	cp := p.Coefficients()
+	cbp := bp.Coefficients()
+	cp = append(cp, cbp...)
+	for i := 0; i < len(cbp); i++ {
+		cp[i].Sub(&cp[i], &cbp[i])
+	}
+	return cp
+}
+
+// commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
+// BROKEN TODO fix, and make less verbose
+//func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
+//	cp := b.Coefficients()
+//	np := b.Size()
+//
+//	fmt.Println("scalar", key.G1[:np])
+//	// lo
+//	sizeBytes := len(key.G1[:np]) * fp.Bytes * 2
+//
+//	copyKeyDone := make(chan unsafe.Pointer, 1)
+//	go iciclegnark.CopyPointsToDevice(key.G1[:np], sizeBytes, copyKeyDone)
+//	keyDevice := <-copyKeyDone
+//	keyDeviceValue := iciclegnark.OnDeviceData{
+//		P:    keyDevice,
+//		Size: sizeBytes,
+//	}
+//
+//	copyCpDone := make(chan unsafe.Pointer, 1)
+//	go iciclegnark.CopyToDevice(cp, sizeBytes, copyCpDone)
+//	cpDevice := <-copyCpDone
+//
+//	fmt.Println("keyDeviceValue.P", keyDeviceValue.P)
+//
+//	// TODO why z is zero?
+//	tmpVal, _, err := iciclegnark.MsmOnDevice(keyDeviceValue.P, cpDevice, keyDeviceValue.Size, true)
+//	fmt.Println("tmpVal", tmpVal)
+//	if err != nil {
+//		fmt.Print("error")
+//	}
+//	var tmpAffinePoint curve.G1Affine
+//	tmpAffinePoint.FromJacobian(&tmpVal)
+//
+//	// Hi
+//	copyResDone := make(chan unsafe.Pointer, 1)
+//
+//	sizeBytes = len(key.G1[:np+n]) * fp.Bytes * 2
+//	go iciclegnark.CopyPointsToDevice(key.G1[:np+n], sizeBytes, copyResDone)
+//
+//	resDevice := <-copyResDone
+//
+//	resDeviceValue := iciclegnark.OnDeviceData{
+//		P:    resDevice,
+//		Size: sizeBytes,
+//	}
+//
+//	resVal, _, err := iciclegnark.MsmOnDevice(resDeviceValue.P, cpDevice, resDeviceValue.Size, true)
+//	if err != nil {
+//		fmt.Print("error")
+//	}
+//	var resAffinePoint curve.G1Affine
+//	resAffinePoint.FromJacobian(&resVal)
+//
+//	resAffinePoint.Sub(&resAffinePoint, &tmpAffinePoint)
+//
+//	// do we need this
+//	go func() {
+//		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmpAffinePoint))
+//		iciclegnark.FreeDevicePointer(unsafe.Pointer(&resAffinePoint))
+//	}()
+//
+//	return resAffinePoint
+//}
+
+// // commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
+func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
+	cp := b.Coefficients()
+	np := b.Size()
+
+	// lo
+	var tmp curve.G1Affine
+	tmp.MultiExp(key.G1[:np], cp, ecc.MultiExpConfig{})
+
+	// hi
+	var res curve.G1Affine
+	res.MultiExp(key.G1[n:n+np], cp, ecc.MultiExpConfig{})
+	res.Sub(&res, &tmp)
+	return res
+}
+
+// return a random polynomial of degree n, if n==-1 cancel the blinding
+func getRandomPolynomial(n int) *iop.Polynomial {
+	var a []fr.Element
+	if n == -1 {
+		a := make([]fr.Element, 1)
+		a[0].SetZero()
+	} else {
+		a = make([]fr.Element, n+1)
+		for i := 0; i <= n; i++ {
+			a[i].SetRandom()
+		}
+	}
+	res := iop.NewPolynomial(&a, iop.Form{
+		Basis: iop.Canonical, Layout: iop.Regular})
+	return res
+}
+
+func coefficients(p []*iop.Polynomial) [][]fr.Element {
+	res := make([][]fr.Element, len(p))
+	for i, pI := range p {
+		res[i] = pI.Coefficients()
+	}
+	return res
+}
+
+// TODO ICICLE
+func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey) error {
+	g := new(errgroup.Group)
+
+	g.Go(func() (err error) {
+		// TODO ICICLE
+		proof.H[0], err = Commit(h1, kzgPk)
+		return
+	})
+
+	g.Go(func() (err error) {
+		// TODO ICICLE
+		proof.H[1], err = Commit(h2, kzgPk)
+		return
+	})
+
+	g.Go(func() (err error) {
+		// TODO ICICLE
+		proof.H[2], err = Commit(h3, kzgPk)
+		return
+	})
+
+	return g.Wait()
+}
+
+// divideByXMinusOne
+// The input must be in LagrangeCoset.
+// The result is in Canonical Regular. (in place using a)
+func divideByXMinusOne(a *iop.Polynomial, domains [2]*fft.Domain) (*iop.Polynomial, error) {
+
+	// check that the basis is LagrangeCoset
+	if a.Basis != iop.LagrangeCoset || a.Layout != iop.BitReverse {
+		return nil, errors.New("invalid form")
+	}
+
+	// prepare the evaluations of x^n-1 on the big domain's coset
+	xnMinusOneInverseLagrangeCoset := evaluateXnMinusOneDomainBigCoset(domains)
+	rho := int(domains[1].Cardinality / domains[0].Cardinality)
+
+	r := a.Coefficients()
+	n := uint64(len(r))
+	nn := uint64(64 - bits.TrailingZeros64(n))
+
+	utils.Parallelize(len(r), func(start, end int) {
+		for i := start; i < end; i++ {
+			iRev := bits.Reverse64(uint64(i)) >> nn
+			r[i].Mul(&r[i], &xnMinusOneInverseLagrangeCoset[int(iRev)%rho])
+		}
+	})
+
+	// since a is in bit reverse order, ToRegular shouldn't do anything
+	a.ToCanonical(domains[1]).ToRegular()
+
+	return a, nil
+
+}
+
+// evaluateXnMinusOneDomainBigCoset evaluates Xᵐ-1 on DomainBig coset
+func evaluateXnMinusOneDomainBigCoset(domains [2]*fft.Domain) []fr.Element {
+
+	rho := domains[1].Cardinality / domains[0].Cardinality
+
+	res := make([]fr.Element, rho)
+
+	expo := big.NewInt(int64(domains[0].Cardinality))
+	res[0].Exp(domains[1].FrMultiplicativeGen, expo)
+
+	var t fr.Element
+	t.Exp(domains[1].Generator, big.NewInt(int64(domains[0].Cardinality)))
+
+	one := fr.One()
+
+	for i := 1; i < int(rho); i++ {
+		res[i].Mul(&res[i-1], &t)
+		res[i-1].Sub(&res[i-1], &one)
+	}
+	res[len(res)-1].Sub(&res[len(res)-1], &one)
+
+	res = fr.BatchInvert(res)
+
+	return res
+}
+
+// computeLinearizedPolynomial computes the linearized polynomial in canonical basis.
+// The purpose is to commit and open all in one ql, qr, qm, qo, qk.
+// * lZeta, rZeta, oZeta are the evaluation of l, r, o at zeta
+// * z is the permutation polynomial, zu is Z(μX), the shifted version of Z
+// * pk is the proving key: the linearized polynomial is a linear combination of ql, qr, qm, qo, qk.
+//
+// The Linearized polynomial is:
+//
+// α²*L₁(ζ)*Z(X)
+// + α*( (l(ζ)+β*s1(ζ)+γ)*(r(ζ)+β*s2(ζ)+γ)*Z(μζ)*s3(X) - Z(X)*(l(ζ)+β*id1(ζ)+γ)*(r(ζ)+β*id2(ζ)+γ)*(o(ζ)+β*id3(ζ)+γ))
+// + l(ζ)*Ql(X) + l(ζ)r(ζ)*Qm(X) + r(ζ)*Qr(X) + o(ζ)*Qo(X) + Qk(X)
+func computeLinearizedPolynomial(lZeta, rZeta, oZeta, alpha, beta, gamma, zeta, zu fr.Element, qcpZeta, blindedZCanonical []fr.Element, pi2Canonical [][]fr.Element, pk *ProvingKey) []fr.Element {
+
+	// first part: individual constraints
+	var rl fr.Element
+	rl.Mul(&rZeta, &lZeta)
+
+	// second part:
+	// Z(μζ)(l(ζ)+β*s1(ζ)+γ)*(r(ζ)+β*s2(ζ)+γ)*β*s3(X)-Z(X)(l(ζ)+β*id1(ζ)+γ)*(r(ζ)+β*id2(ζ)+γ)*(o(ζ)+β*id3(ζ)+γ)
+	var s1, s2 fr.Element
+	chS1 := make(chan struct{}, 1)
+	go func() {
+		s1 = pk.GetTrace().S1.Evaluate(zeta)                 // s1(ζ)
+		s1.Mul(&s1, &beta).Add(&s1, &lZeta).Add(&s1, &gamma) // (l(ζ)+β*s1(ζ)+γ)
+		close(chS1)
+	}()
+	// ps2 := iop.NewPolynomial(&pk.S2Canonical, iop.Form{Basis: iop.Canonical, Layout: iop.Regular})
+	tmp := pk.GetTrace().S2.Evaluate(zeta)                   // s2(ζ)
+	tmp.Mul(&tmp, &beta).Add(&tmp, &rZeta).Add(&tmp, &gamma) // (r(ζ)+β*s2(ζ)+γ)
+	<-chS1
+	s1.Mul(&s1, &tmp).Mul(&s1, &zu).Mul(&s1, &beta) // (l(ζ)+β*s1(β)+γ)*(r(ζ)+β*s2(β)+γ)*β*Z(μζ)
+
+	var uzeta, uuzeta fr.Element
+	uzeta.Mul(&zeta, &pk.Vk.CosetShift)
+	uuzeta.Mul(&uzeta, &pk.Vk.CosetShift)
+
+	s2.Mul(&beta, &zeta).Add(&s2, &lZeta).Add(&s2, &gamma)      // (l(ζ)+β*ζ+γ)
+	tmp.Mul(&beta, &uzeta).Add(&tmp, &rZeta).Add(&tmp, &gamma)  // (r(ζ)+β*u*ζ+γ)
+	s2.Mul(&s2, &tmp)                                           // (l(ζ)+β*ζ+γ)*(r(ζ)+β*u*ζ+γ)
+	tmp.Mul(&beta, &uuzeta).Add(&tmp, &oZeta).Add(&tmp, &gamma) // (o(ζ)+β*u²*ζ+γ)
+	s2.Mul(&s2, &tmp)                                           // (l(ζ)+β*ζ+γ)*(r(ζ)+β*u*ζ+γ)*(o(ζ)+β*u²*ζ+γ)
+	s2.Neg(&s2)                                                 // -(l(ζ)+β*ζ+γ)*(r(ζ)+β*u*ζ+γ)*(o(ζ)+β*u²*ζ+γ)
+
+	// third part L₁(ζ)*α²*Z
+	var lagrangeZeta, one, den, frNbElmt fr.Element
+	one.SetOne()
+	nbElmt := int64(pk.Domain[0].Cardinality)
+	lagrangeZeta.Set(&zeta).
+		Exp(lagrangeZeta, big.NewInt(nbElmt)).
+		Sub(&lagrangeZeta, &one)
+	frNbElmt.SetUint64(uint64(nbElmt))
+	den.Sub(&zeta, &one).
+		Inverse(&den)
+	lagrangeZeta.Mul(&lagrangeZeta, &den). // L₁ = (ζⁿ⁻¹)/(ζ-1)
+						Mul(&lagrangeZeta, &alpha).
+						Mul(&lagrangeZeta, &alpha).
+						Mul(&lagrangeZeta, &pk.Domain[0].CardinalityInv) // (1/n)*α²*L₁(ζ)
+
+	s3canonical := pk.GetTrace().S3.Coefficients()
+
+	utils.Parallelize(len(blindedZCanonical), func(start, end int) {
+
+		cql := pk.GetTrace().Ql.Coefficients()
+		cqr := pk.GetTrace().Qr.Coefficients()
+		cqm := pk.GetTrace().Qm.Coefficients()
+		cqo := pk.GetTrace().Qo.Coefficients()
+		cqk := pk.GetTrace().Qk.Coefficients()
+
+		var t, t0, t1 fr.Element
+
+		for i := start; i < end; i++ {
+
+			t.Mul(&blindedZCanonical[i], &s2) // -Z(X)*(l(ζ)+β*ζ+γ)*(r(ζ)+β*u*ζ+γ)*(o(ζ)+β*u²*ζ+γ)
+
+			if i < len(s3canonical) {
+
+				t0.Mul(&s3canonical[i], &s1) // (l(ζ)+β*s1(ζ)+γ)*(r(ζ)+β*s2(ζ)+γ)*Z(μζ)*β*s3(X)
+
+				t.Add(&t, &t0)
+			}
+
+			t.Mul(&t, &alpha) // α*( (l(ζ)+β*s1(ζ)+γ)*(r(ζ)+β*s2(ζ)+γ)*Z(μζ)*s3(X) - Z(X)*(l(ζ)+β*ζ+γ)*(r(ζ)+β*u*ζ+γ)*(o(ζ)+β*u²*ζ+γ))
+
+			if i < len(cqm) {
+
+				t1.Mul(&cqm[i], &rl) // linPol = linPol + l(ζ)r(ζ)*Qm(X)
+
+				t0.Mul(&cql[i], &lZeta)
+				t0.Add(&t0, &t1)
+
+				t.Add(&t, &t0) // linPol = linPol + l(ζ)*Ql(X)
+
+				t0.Mul(&cqr[i], &rZeta)
+				t.Add(&t, &t0) // linPol = linPol + r(ζ)*Qr(X)
+
+				t0.Mul(&cqo[i], &oZeta)
+				t0.Add(&t0, &cqk[i])
+
+				t.Add(&t, &t0) // linPol = linPol + o(ζ)*Qo(X) + Qk(X)
+
+				for j := range qcpZeta {
+					t0.Mul(&pi2Canonical[j][i], &qcpZeta[j])
+					t.Add(&t, &t0)
+				}
+			}
+
+			t0.Mul(&blindedZCanonical[i], &lagrangeZeta)
+			blindedZCanonical[i].Add(&t, &t0) // finish the computation
+		}
+	})
+	return blindedZCanonical
 }
 
 var errContextDone = errors.New("context done")
