@@ -24,6 +24,7 @@ var (
 
 // Commit commits to a polynomial using a multi exponentiation with the SRS.
 // It is assumed that the polynomial is in canonical form, in Montgomery form.
+// TODO sort out points at infinity
 func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	log := logger.Logger()
 	log.Info().Msg("Running KZG Commit on Device")
@@ -44,6 +45,9 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	sizeBytes := len(pk.G1[:len(p)]) * fp.Bytes * 2
 	copyKeyDone := make(chan unsafe.Pointer, 1)
 
+	//fmt.Println("KZG Scalars: ", pk.G1[:len(p)])
+	//fmt.Println("KZG Scalar Size(Bytes): ", sizeBytes)
+
 	go iciclegnark.CopyPointsToDevice(pk.G1[:len(p)], sizeBytes, copyKeyDone)
 
 	keyDevice := <-copyKeyDone
@@ -56,14 +60,20 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 
 	startTime = time.Now()
 
+	// Copy points to device
 	copyCpDone := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyToDevice(p, sizeBytes, copyCpDone)
 	cpDevice := <-copyCpDone
 
+	//fmt.Println("KZG Points: ", p)
+	//fmt.Println("KZG Points Size(Bytes): ", sizeBytes)
+
 	log.Debug().Dur("elapsed", time.Since(startTime)).Msg("Copied Points to device.")
 
+	// KZG Committment on device
 	var tmp bn254.G1Jac
 	tmp, _, err := iciclegnark.MsmOnDevice(keyDeviceValue.P, cpDevice, keyDeviceValue.Size, true)
+	fmt.Println("KZG Commitment On Device: ", tmp)
 	if err != nil {
 		fmt.Print("error")
 	}
@@ -71,6 +81,11 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 
 	startTime = time.Now()
 	log.Debug().Dur("elapsed", time.Since(startTime)).Msg("MSM on device.")
+
+	// Free device memory
+	go func() {
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmp))
+	}()
 
 	return res, nil
 }

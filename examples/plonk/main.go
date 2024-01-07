@@ -44,27 +44,28 @@ type Circuit struct {
 // Define declares the circuit's constraints
 // y == x**e
 func (circuit *Circuit) Define(api frontend.API) error {
-
-	// number of bits of exponent
-	const bitSize = 4000
-
-	// specify constraints
+	var Y, Z [1000]frontend.Variable
+	for j := 0; j < 1000; j++ {
+		Y[j] = frontend.Variable(1)
+		Z[j] = frontend.Variable(1)
+	}
 	output := frontend.Variable(1)
+	const bitSize = 1000
 	bits := api.ToBinary(circuit.E, bitSize)
-
 	for i := 0; i < len(bits); i++ {
-		// api.Println(fmt.Sprintf("e[%d]", i), bits[i]) // we may print a variable for testing and / or debugging purposes
-
 		if i != 0 {
 			output = api.Mul(output, output)
 		}
 		multiply := api.Mul(output, circuit.X)
 		output = api.Select(bits[len(bits)-1-i], multiply, output)
-
+		for j := 0; j < 1000; j++ {
+			Y[j] = api.Add(Y[j], output)
+			Z[j] = api.Add(Z[j], output)
+		}
 	}
-
-	api.AssertIsEqual(circuit.Y, output)
-
+	for j := 0; j < 1000; j++ {
+		api.AssertIsEqual(Z[j], Y[j])
+	}
 	return nil
 }
 

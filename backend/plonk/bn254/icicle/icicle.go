@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 
+	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/iop"
@@ -312,15 +312,18 @@ func (s *instance) initComputeNumerator() error {
 		}
 	}
 
+	// TODO ICICLE accelerate fft
 	cosetTable := s.pk.Domain[0].CosetTable
 	twiddles := s.pk.Domain[1].Twiddles[0][:n]
 
 	s.cosetTableRev = make([]fr.Element, len(cosetTable))
 	copy(s.cosetTableRev, cosetTable)
+	// TODO ICICLE reverseScalars
 	fft.BitReverse(s.cosetTableRev)
 
 	s.twiddlesRev = make([]fr.Element, len(twiddles))
 	copy(s.twiddlesRev, twiddles)
+	// TODO ICICLE reverseScalars
 	fft.BitReverse(s.twiddlesRev)
 
 	close(s.chNumeratorInit)
@@ -532,7 +535,7 @@ func (s *instance) deriveGammaAndBeta() error {
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 
 	// TODO ICICLE
-	commit, err = Commit(p.Coefficients(), s.pk.KzgLagrange)
+	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
 
 	// we add in the blinding contribution
 	n := int(s.pk.Domain[0].Cardinality)
@@ -709,7 +712,7 @@ func (s *instance) h3() []fr.Element {
 }
 
 // fold the commitment to H ([H₀] + ζᵐ⁺²*[H₁] + ζ²⁽ᵐ⁺²⁾[H₂])
-// TODO use ICICLE here to accelerate
+// TODO find ICICLE NTT
 func (s *instance) foldH() error {
 	// wait for H to be committed and zeta to be derived (or ctx.Done())
 	select {
@@ -724,7 +727,6 @@ func (s *instance) foldH() error {
 	zetaPowerNplusTwo.Exp(s.zeta, &n)
 	zetaPowerNplusTwo.BigInt(&n)
 
-	// TODO use ICICLE here to accellerate
 	s.foldedHDigest.ScalarMultiplication(&s.proof.H[2], &n)
 	s.foldedHDigest.Add(&s.foldedHDigest, &s.proof.H[1])       // ζᵐ⁺²*Comm(h3)
 	s.foldedHDigest.ScalarMultiplication(&s.foldedHDigest, &n) // ζ²⁽ᵐ⁺²⁾*Comm(h3) + ζᵐ⁺²*Comm(h2)
@@ -812,7 +814,7 @@ func (s *instance) computeLinearizedPolynomial() error {
 
 	var err error
 	// TODO accelerate with ICICLE
-	s.linearizedPolynomialDigest, err = Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
@@ -1195,83 +1197,75 @@ func getBlindedCoefficients(p, bp *iop.Polynomial) []fr.Element {
 }
 
 // commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
-// BROKEN TODO fix, and make less verbose
-//func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
-//	cp := b.Coefficients()
-//	np := b.Size()
-//
-//	fmt.Println("scalar", key.G1[:np])
-//	// lo
-//	sizeBytes := len(key.G1[:np]) * fp.Bytes * 2
-//
-//	copyKeyDone := make(chan unsafe.Pointer, 1)
-//	go iciclegnark.CopyPointsToDevice(key.G1[:np], sizeBytes, copyKeyDone)
-//	keyDevice := <-copyKeyDone
-//	keyDeviceValue := iciclegnark.OnDeviceData{
-//		P:    keyDevice,
-//		Size: sizeBytes,
-//	}
-//
-//	copyCpDone := make(chan unsafe.Pointer, 1)
-//	go iciclegnark.CopyToDevice(cp, sizeBytes, copyCpDone)
-//	cpDevice := <-copyCpDone
-//
-//	fmt.Println("keyDeviceValue.P", keyDeviceValue.P)
-//
-//	// TODO why z is zero?
-//	tmpVal, _, err := iciclegnark.MsmOnDevice(keyDeviceValue.P, cpDevice, keyDeviceValue.Size, true)
-//	fmt.Println("tmpVal", tmpVal)
-//	if err != nil {
-//		fmt.Print("error")
-//	}
-//	var tmpAffinePoint curve.G1Affine
-//	tmpAffinePoint.FromJacobian(&tmpVal)
-//
-//	// Hi
-//	copyResDone := make(chan unsafe.Pointer, 1)
-//
-//	sizeBytes = len(key.G1[:np+n]) * fp.Bytes * 2
-//	go iciclegnark.CopyPointsToDevice(key.G1[:np+n], sizeBytes, copyResDone)
-//
-//	resDevice := <-copyResDone
-//
-//	resDeviceValue := iciclegnark.OnDeviceData{
-//		P:    resDevice,
-//		Size: sizeBytes,
-//	}
-//
-//	resVal, _, err := iciclegnark.MsmOnDevice(resDeviceValue.P, cpDevice, resDeviceValue.Size, true)
-//	if err != nil {
-//		fmt.Print("error")
-//	}
-//	var resAffinePoint curve.G1Affine
-//	resAffinePoint.FromJacobian(&resVal)
-//
-//	resAffinePoint.Sub(&resAffinePoint, &tmpAffinePoint)
-//
-//	// do we need this
-//	go func() {
-//		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmpAffinePoint))
-//		iciclegnark.FreeDevicePointer(unsafe.Pointer(&resAffinePoint))
-//	}()
-//
-//	return resAffinePoint
-//}
-
-// // commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
+// TODO fix ICICLE
 func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
 	cp := b.Coefficients()
 	np := b.Size()
 
-	// lo
-	var tmp curve.G1Affine
-	tmp.MultiExp(key.G1[:np], cp, ecc.MultiExpConfig{})
+	// size of the commitment key
+	sizeBytes := len(key.G1[:np]) * fp.Bytes * 2
 
-	// hi
-	var res curve.G1Affine
-	res.MultiExp(key.G1[n:n+np], cp, ecc.MultiExpConfig{})
-	res.Sub(&res, &tmp)
-	return res
+	fmt.Println("Scalars: ", key.G1[:np])
+	fmt.Println("Scalar Size(Bytes): ", sizeBytes)
+
+	// Copy key to device
+	copyKeyDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyPointsToDevice(key.G1[:np], sizeBytes, copyKeyDone)
+	keyDevice := <-copyKeyDone
+	keyDeviceValue := iciclegnark.OnDeviceData{
+		P:    keyDevice,
+		Size: sizeBytes,
+	}
+
+	// Copy points to device
+	copyCpDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(cp, sizeBytes, copyCpDone)
+	cpDevice := <-copyCpDone
+
+	fmt.Println("Points", cp)
+	fmt.Println("Points Size(bytes):", sizeBytes)
+
+	// Calculate(lo) commitment on Device
+	tmpVal, _, err := iciclegnark.MsmOnDevice(keyDeviceValue.P, cpDevice, keyDeviceValue.Size, true)
+	fmt.Print("MsmOnDevice Commitment(lo): ", tmpVal)
+	if err != nil {
+		fmt.Print("Error", err)
+	}
+	var tmpAffinePoint curve.G1Affine
+	tmpAffinePoint.FromJacobian(&tmpVal)
+
+	// Copy Key G1[:np+n] to device
+	copyResDone := make(chan unsafe.Pointer, 1)
+
+	sizeBytes = len(key.G1[:np+n]) * fp.Bytes * 2
+	go iciclegnark.CopyPointsToDevice(key.G1[:np+n], sizeBytes, copyResDone)
+
+	resDevice := <-copyResDone
+
+	resDeviceValue := iciclegnark.OnDeviceData{
+		P:    resDevice,
+		Size: sizeBytes,
+	}
+
+	// Calculate(hi) commitment on Device
+	resVal, _, err := iciclegnark.MsmOnDevice(resDeviceValue.P, cpDevice, resDeviceValue.Size, true)
+	fmt.Print("MsmOnDevice Commitment(hi): ", resVal)
+	if err != nil {
+		fmt.Print("error")
+	}
+	var resAffinePoint curve.G1Affine
+	resAffinePoint.FromJacobian(&resVal)
+
+	// Sub(lo, hi) to get the final commitment
+	resAffinePoint.Sub(&resAffinePoint, &tmpAffinePoint)
+
+	// Free device memory
+	go func() {
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmpVal))
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&resVal))
+	}()
+
+	return resAffinePoint
 }
 
 // return a random polynomial of degree n, if n==-1 cancel the blinding
@@ -1305,19 +1299,19 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk k
 
 	g.Go(func() (err error) {
 		// TODO ICICLE
-		proof.H[0], err = Commit(h1, kzgPk)
+		proof.H[0], err = kzg.Commit(h1, kzgPk)
 		return
 	})
 
 	g.Go(func() (err error) {
 		// TODO ICICLE
-		proof.H[1], err = Commit(h2, kzgPk)
+		proof.H[1], err = kzg.Commit(h2, kzgPk)
 		return
 	})
 
 	g.Go(func() (err error) {
 		// TODO ICICLE
-		proof.H[2], err = Commit(h3, kzgPk)
+		proof.H[2], err = kzg.Commit(h3, kzgPk)
 		return
 	})
 
