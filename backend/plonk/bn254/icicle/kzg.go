@@ -3,15 +3,13 @@ package icicle_bn254
 import (
 	"errors"
 	"fmt"
-	"time"
+	"sync"
 	"unsafe"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
-	"github.com/consensys/gnark/logger"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 )
 
@@ -24,67 +22,99 @@ var (
 
 // Commit commits to a polynomial using a multi exponentiation with the SRS.
 // It is assumed that the polynomial is in canonical form, in Montgomery form.
-// TODO sort out points at infinity
 func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
-	log := logger.Logger()
-	log.Info().Msg("Running KZG Commit on Device")
-
 	if len(p) == 0 || len(p) > len(pk.G1) {
 		return Digest{}, ErrInvalidPolynomialSize
 	}
 
-	var res bn254.G1Affine
-
-	config := ecc.MultiExpConfig{}
-	if len(nbTasks) > 0 {
-		config.NbTasks = nbTasks[0]
-	}
-
-	startTime := time.Now()
-
-	sizeBytes := len(pk.G1[:len(p)]) * fp.Bytes * 2
-	copyKeyDone := make(chan unsafe.Pointer, 1)
-
-	//fmt.Println("KZG Scalars: ", pk.G1[:len(p)])
-	//fmt.Println("KZG Scalar Size(Bytes): ", sizeBytes)
-
-	go iciclegnark.CopyPointsToDevice(pk.G1[:len(p)], sizeBytes, copyKeyDone)
-
-	keyDevice := <-copyKeyDone
-	keyDeviceValue := iciclegnark.OnDeviceData{
-		P:    keyDevice,
-		Size: sizeBytes,
-	}
-
-	log.Debug().Int("sizeBytes", sizeBytes).Dur("elapsed", time.Since(startTime)).Msg("Copied Scalars to device.")
-
-	startTime = time.Now()
+	// Size of the polynomial in bytes
+	sizeBytesScalars := len(p) * fr.Bytes
 
 	// Copy points to device
+	copyTmpDone := make(chan unsafe.Pointer, 1)
+	tmpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
+	go func() {
+		// size of the commitment key
+		sizeBytes := len(pk.G1[:len(p)]) * fp.Bytes * 2
+
+		// Perform copy operation
+		iciclegnark.CopyPointsToDevice(pk.G1[:len(p)], sizeBytes, copyTmpDone)
+
+		// Receive result once copy operation is done
+		keyDevice := <-copyTmpDone
+
+		// Create OnDeviceData
+		tmpDeviceValue := iciclegnark.OnDeviceData{
+			P:    keyDevice,
+			Size: sizeBytes,
+		}
+
+		// Send OnDeviceData to respective channel
+		tmpDeviceData <- tmpDeviceValue
+
+		// Close channels
+		close(copyTmpDone)
+		close(tmpDeviceData)
+	}()
+
+	//  Copy device data to respective channels
+	tmpDeviceValue := <-tmpDeviceData
+
+	// Initialize channels
 	copyCpDone := make(chan unsafe.Pointer, 1)
-	go iciclegnark.CopyToDevice(p, sizeBytes, copyCpDone)
-	cpDevice := <-copyCpDone
+	cpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
 
-	//fmt.Println("KZG Points: ", p)
-	//fmt.Println("KZG Points Size(Bytes): ", sizeBytes)
+	// Start asynchronous routine
+	go func() {
+		// Perform copy operation
+		iciclegnark.CopyToDevice(p, sizeBytesScalars, copyCpDone)
 
-	log.Debug().Dur("elapsed", time.Since(startTime)).Msg("Copied Points to device.")
+		// Receive result once copy operation is done
+		cpDevice := <-copyCpDone
+
+		// Create OnDeviceData
+		cpDeviceValue := iciclegnark.OnDeviceData{
+			P:    cpDevice,
+			Size: sizeBytesScalars,
+		}
+
+		// Send OnDeviceData to respective channel
+		cpDeviceData <- cpDeviceValue
+
+		// Close channels
+		close(copyCpDone)
+		close(cpDeviceData)
+	}()
+
+	// Wait for copy operation to finish
+	cpDeviceValue := <-cpDeviceData
 
 	// KZG Committment on device
-	var tmp bn254.G1Jac
-	tmp, _, err := iciclegnark.MsmOnDevice(keyDeviceValue.P, cpDevice, keyDeviceValue.Size, true)
-	fmt.Println("KZG Commitment On Device: ", tmp)
-	if err != nil {
-		fmt.Print("error")
-	}
-	res.FromJacobian(&tmp)
+	var wg sync.WaitGroup
 
-	startTime = time.Now()
-	log.Debug().Dur("elapsed", time.Since(startTime)).Msg("MSM on device.")
+	// Perform multi exponentiation on device
+	wg.Add(1)
+	tmpChan := make(chan Digest, 1)
+	go func() {
+		defer wg.Done()
+		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, sizeBytesScalars, true)
+		//fmt.Println("tmp", tmp)
+		if err != nil {
+			fmt.Print("error", err)
+		}
+		var res bn254.G1Affine
+		res.FromJacobian(&tmp)
+		tmpChan <- res
+	}()
+	wg.Wait()
+
+	// Receive result once copy operation is done
+	res := <-tmpChan
 
 	// Free device memory
 	go func() {
-		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmp))
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&cpDeviceValue))
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmpDeviceValue))
 	}()
 
 	return res, nil
