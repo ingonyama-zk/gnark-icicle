@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
@@ -1199,71 +1200,155 @@ func getBlindedCoefficients(p, bp *iop.Polynomial) []fr.Element {
 // commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
 // TODO fix ICICLE
 func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
+	// scalars
 	cp := b.Coefficients()
 	np := b.Size()
 
-	// size of the commitment key
-	sizeBytes := len(key.G1[:np]) * fp.Bytes * 2
-
-	fmt.Println("Scalars: ", key.G1[:np])
-	fmt.Println("Scalar Size(Bytes): ", sizeBytes)
-
-	// Copy key to device
-	copyKeyDone := make(chan unsafe.Pointer, 1)
-	go iciclegnark.CopyPointsToDevice(key.G1[:np], sizeBytes, copyKeyDone)
-	keyDevice := <-copyKeyDone
-	keyDeviceValue := iciclegnark.OnDeviceData{
-		P:    keyDevice,
-		Size: sizeBytes,
-	}
+	// tbd mul * 2
+	sizeBytesScalars := np * fr.Bytes
 
 	// Copy points to device
-	copyCpDone := make(chan unsafe.Pointer, 1)
-	go iciclegnark.CopyToDevice(cp, sizeBytes, copyCpDone)
-	cpDevice := <-copyCpDone
+	copyKeyDone := make(chan unsafe.Pointer, 1)
+	tmpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
+	go func() {
+		// size of the commitment key
+		sizeBytes := len(key.G1[:np]) * fp.Bytes * 2
 
-	fmt.Println("Points", cp)
-	fmt.Println("Points Size(bytes):", sizeBytes)
+		iciclegnark.CopyPointsToDevice(key.G1[:np], sizeBytes, copyKeyDone)
+		keyDevice := <-copyKeyDone
+
+		tmpDeviceValue := iciclegnark.OnDeviceData{
+			P:    keyDevice,
+			Size: sizeBytes,
+		}
+
+		tmpDeviceData <- tmpDeviceValue
+
+		close(copyKeyDone)
+		close(tmpDeviceData)
+	}()
+
+	//  Copy device data to respective channels
+	tmpDeviceValue := <-tmpDeviceData
+
+	// Initialize channels
+	copyResDone := make(chan unsafe.Pointer, 1)
+	resDeviceData := make(chan iciclegnark.OnDeviceData, 1)
+	// Start asynchronous routine
+	go func() {
+		// Adjust sizeBytes for the new data shape
+		sizeBytes := len(key.G1[:np+n]) * fp.Bytes * 2
+
+		// Perform copy operation
+		iciclegnark.CopyPointsToDevice(key.G1[:np+n], sizeBytes, copyResDone)
+
+		// Receive result once copy operation is done
+		resDevice := <-copyResDone
+
+		// Create OnDeviceData
+		resDeviceValue := iciclegnark.OnDeviceData{
+			P:    resDevice,
+			Size: sizeBytes,
+		}
+
+		// Send OnDeviceData to respective channel
+		resDeviceData <- resDeviceValue
+
+		// Close channels
+		close(copyResDone)
+		close(resDeviceData)
+	}()
+
+	// Retrieve resDeviceValue from channel
+	resDeviceValue := <-resDeviceData
+
+	// Initialize channels
+	copyCpDone := make(chan unsafe.Pointer, 1)
+	cpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
+
+	// Start asynchronous routine
+	go func() {
+		// Perform copy operation
+		iciclegnark.CopyToDevice(cp, sizeBytesScalars, copyCpDone)
+
+		// Receive result once copy operation is done
+		cpDevice := <-copyCpDone
+
+		// Create OnDeviceData
+		cpDeviceValue := iciclegnark.OnDeviceData{
+			P:    cpDevice,
+			Size: sizeBytesScalars,
+		}
+
+		// Send OnDeviceData to respective channel
+		cpDeviceData <- cpDeviceValue
+
+		// Close channels
+		close(copyCpDone)
+		close(cpDeviceData)
+	}()
+
+	// Wait for copy operation to finish
+	cpDeviceValue := <-cpDeviceData
 
 	// Calculate(lo) commitment on Device
-	tmpVal, _, err := iciclegnark.MsmOnDevice(keyDeviceValue.P, cpDevice, keyDeviceValue.Size, true)
-	fmt.Print("MsmOnDevice Commitment(lo): ", tmpVal)
-	if err != nil {
-		fmt.Print("Error", err)
-	}
-	var tmpAffinePoint curve.G1Affine
-	tmpAffinePoint.FromJacobian(&tmpVal)
+	var wg sync.WaitGroup
 
-	// Copy Key G1[:np+n] to device
-	copyResDone := make(chan unsafe.Pointer, 1)
+	wg.Add(1)
+	tmpChan := make(chan curve.G1Affine, 1)
+	go func() {
+		defer wg.Done()
+		tmpVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, sizeBytesScalars, true)
+		if err != nil {
+			fmt.Print("Error", err)
+			return
+		}
+		var tmp curve.G1Affine
+		tmp.FromJacobian(&tmpVal)
+		tmpChan <- tmp
+		fmt.Println("MSM(tmp) on GPU", tmp)
+	}()
+	wg.Wait()
 
-	sizeBytes = len(key.G1[:np+n]) * fp.Bytes * 2
-	go iciclegnark.CopyPointsToDevice(key.G1[:np+n], sizeBytes, copyResDone)
-
-	resDevice := <-copyResDone
-
-	resDeviceValue := iciclegnark.OnDeviceData{
-		P:    resDevice,
-		Size: sizeBytes,
-	}
+	tmpAffinePoint := <-tmpChan
 
 	// Calculate(hi) commitment on Device
-	resVal, _, err := iciclegnark.MsmOnDevice(resDeviceValue.P, cpDevice, resDeviceValue.Size, true)
-	fmt.Print("MsmOnDevice Commitment(hi): ", resVal)
-	if err != nil {
-		fmt.Print("error")
-	}
-	var resAffinePoint curve.G1Affine
-	resAffinePoint.FromJacobian(&resVal)
+	wg.Add(1)
+	resChan := make(chan curve.G1Affine, 1)
+	go func() {
+		defer wg.Done()
+		resVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, resDeviceValue.P, sizeBytesScalars, true)
+		if err != nil {
+			fmt.Print("error")
+			return
+		}
+		var res curve.G1Affine
+		res.FromJacobian(&resVal)
+		resChan <- res
+		//fmt.Println("MSM(res) on GPU", resAffinePoint)
+	}()
+	wg.Wait()
+
+	resAffinePoint := <-resChan
 
 	// Sub(lo, hi) to get the final commitment
 	resAffinePoint.Sub(&resAffinePoint, &tmpAffinePoint)
 
 	// Free device memory
 	go func() {
-		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmpVal))
-		iciclegnark.FreeDevicePointer(unsafe.Pointer(&resVal))
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&cpDeviceValue))
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&resDeviceValue))
 	}()
+
+	var tmp curve.G1Affine
+	tmp.MultiExp(key.G1[:np], cp, ecc.MultiExpConfig{})
+	fmt.Println("MSM(tmp) on CPU", tmp)
+
+	// hi
+	var res curve.G1Affine
+	res.MultiExp(key.G1[n:n+np], cp, ecc.MultiExpConfig{})
+	//fmt.Println("MSM(res) on CPU", res)
+	res.Sub(&res, &tmp)
 
 	return resAffinePoint
 }
