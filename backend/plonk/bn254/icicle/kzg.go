@@ -26,11 +26,12 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	if len(p) == 0 || len(p) > len(pk.G1) {
 		return Digest{}, ErrInvalidPolynomialSize
 	}
+
 	// Size of the polynomial
 	np := len(p)
 
 	// Size of the polynomial in bytes
-	sizeBytesScalars := len(p) * fr.Bytes
+	sizeBytesScalars := np * fr.Bytes
 
 	// Copy points to device
 	copyTmpDone := make(chan unsafe.Pointer, 1)
@@ -99,8 +100,8 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	tmpChan := make(chan bn254.G1Affine, 1)
 	go func() {
 		defer wg.Done()
-		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, cpDeviceValue.Size, true)
-		fmt.Println("tmp", tmp)
+		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, np, true)
+		//fmt.Println("tmp", tmp)
 		if err != nil {
 			fmt.Print("error", err)
 		}
