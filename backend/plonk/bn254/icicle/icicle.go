@@ -16,7 +16,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
@@ -535,7 +534,6 @@ func (s *instance) deriveGammaAndBeta() error {
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 
-	// TODO ICICLE
 	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
 
 	// we add in the blinding contribution
@@ -1240,7 +1238,7 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 		sizeBytes := len(key.G1[:np+n]) * fp.Bytes * 2
 
 		// Perform copy operation
-		iciclegnark.CopyPointsToDevice(key.G1[:np+n], sizeBytes, copyResDone)
+		iciclegnark.CopyPointsToDevice(key.G1[n:np+n], sizeBytes, copyResDone)
 
 		// Receive result once copy operation is done
 		resDevice := <-copyResDone
@@ -1298,7 +1296,7 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 	tmpChan := make(chan curve.G1Affine, 1)
 	go func() {
 		defer wg.Done()
-		tmpVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, sizeBytesScalars, true)
+		tmpVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, np, true)
 		if err != nil {
 			fmt.Print("Error", err)
 			return
@@ -1306,7 +1304,7 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 		var tmp curve.G1Affine
 		tmp.FromJacobian(&tmpVal)
 		tmpChan <- tmp
-		fmt.Println("MSM(tmp) on GPU", tmp)
+		//fmt.Println("MSM(tmp) on GPU", tmp)
 	}()
 	wg.Wait()
 
@@ -1317,7 +1315,7 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 	resChan := make(chan curve.G1Affine, 1)
 	go func() {
 		defer wg.Done()
-		resVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, resDeviceValue.P, sizeBytesScalars, true)
+		resVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, resDeviceValue.P, np, true)
 		if err != nil {
 			fmt.Print("error")
 			return
@@ -1339,16 +1337,6 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 		iciclegnark.FreeDevicePointer(unsafe.Pointer(&cpDeviceValue))
 		iciclegnark.FreeDevicePointer(unsafe.Pointer(&resDeviceValue))
 	}()
-
-	var tmp curve.G1Affine
-	tmp.MultiExp(key.G1[:np], cp, ecc.MultiExpConfig{})
-	fmt.Println("MSM(tmp) on CPU", tmp)
-
-	// hi
-	var res curve.G1Affine
-	res.MultiExp(key.G1[n:n+np], cp, ecc.MultiExpConfig{})
-	//fmt.Println("MSM(res) on CPU", res)
-	res.Sub(&res, &tmp)
 
 	return resAffinePoint
 }
