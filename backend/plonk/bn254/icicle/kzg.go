@@ -26,6 +26,8 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	if len(p) == 0 || len(p) > len(pk.G1) {
 		return Digest{}, ErrInvalidPolynomialSize
 	}
+	// Size of the polynomial
+	np := len(p)
 
 	// Size of the polynomial in bytes
 	sizeBytesScalars := len(p) * fr.Bytes
@@ -35,10 +37,10 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	tmpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
 	go func() {
 		// size of the commitment key
-		sizeBytes := len(pk.G1[:len(p)]) * fp.Bytes * 2
+		sizeBytes := len(pk.G1[:np]) * fp.Bytes * 2
 
 		// Perform copy operation
-		iciclegnark.CopyPointsToDevice(pk.G1[:len(p)], sizeBytes, copyTmpDone)
+		iciclegnark.CopyPointsToDevice(pk.G1[:np], sizeBytes, copyTmpDone)
 
 		// Receive result once copy operation is done
 		keyDevice := <-copyTmpDone
@@ -60,11 +62,11 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	//  Copy device data to respective channels
 	tmpDeviceValue := <-tmpDeviceData
 
-	// Initialize channels
+	// Initialize Scalar channels
 	copyCpDone := make(chan unsafe.Pointer, 1)
 	cpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
 
-	// Start asynchronous routine
+	// Copy Scalar to device
 	go func() {
 		// Perform copy operation
 		iciclegnark.CopyToDevice(p, sizeBytesScalars, copyCpDone)
@@ -94,11 +96,11 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 
 	// Perform multi exponentiation on device
 	wg.Add(1)
-	tmpChan := make(chan Digest, 1)
+	tmpChan := make(chan bn254.G1Affine, 1)
 	go func() {
 		defer wg.Done()
-		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, sizeBytesScalars, true)
-		//fmt.Println("tmp", tmp)
+		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, tmpDeviceValue.P, cpDeviceValue.Size, true)
+		fmt.Println("tmp", tmp)
 		if err != nil {
 			fmt.Print("error", err)
 		}
