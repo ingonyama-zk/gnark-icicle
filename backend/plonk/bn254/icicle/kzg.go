@@ -13,12 +13,12 @@ import (
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 )
 
-// Digest commitment of a polynomial.
-type Digest = bn254.G1Affine
-
 var (
 	ErrInvalidPolynomialSize = errors.New("invalid polynomial size (larger than SRS or == 0)")
 )
+
+// Digest commitment of a polynomial.
+type Digest = bn254.G1Affine
 
 // Commit commits to a polynomial using a multi exponentiation with the SRS.
 // It is assumed that the polynomial is in canonical form, in Montgomery form.
@@ -121,4 +121,63 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	}()
 
 	return res, nil
+}
+
+// Open computes an opening proof of polynomial p at given point.
+// fft.Domain Cardinality must be larger than p.Degree()
+func Open(p []fr.Element, point fr.Element, pk kzg.ProvingKey) (kzg.OpeningProof, error) {
+	if len(p) == 0 || len(p) > len(pk.G1) {
+		return kzg.OpeningProof{}, ErrInvalidPolynomialSize
+	}
+
+	// build the proof
+	res := kzg.OpeningProof{
+		ClaimedValue: eval(p, point),
+	}
+
+	// compute H
+	// h reuses memory from _p
+	_p := make([]fr.Element, len(p))
+	copy(_p, p)
+	h := dividePolyByXminusA(_p, res.ClaimedValue, point)
+
+	// commit to H
+	hCommit, err := Commit(h, pk)
+	if err != nil {
+		return kzg.OpeningProof{}, err
+	}
+	res.H.Set(&hCommit)
+
+	return res, nil
+}
+
+// dividePolyByXminusA computes (f-f(a))/(x-a), in canonical basis, in regular form
+// f memory is re-used for the result
+func dividePolyByXminusA(f []fr.Element, fa, a fr.Element) []fr.Element {
+
+	// first we compute f-f(a)
+	f[0].Sub(&f[0], &fa)
+
+	// now we use synthetic division to divide by x-a
+	var t fr.Element
+	for i := len(f) - 2; i >= 0; i-- {
+		t.Mul(&f[i+1], &a)
+
+		f[i].Add(&f[i], &t)
+	}
+
+	// the result is of degree deg(f)-1
+	return f[1:]
+}
+
+// eval returns p(point) where p is interpreted as a polynomial
+// ∑_{i<len(p)}p[i]Xⁱ
+func eval(p []fr.Element, point fr.Element) fr.Element {
+	var res fr.Element
+	n := len(p)
+	res.Set(&p[n-1])
+	for i := n - 2; i >= 0; i-- {
+		res.Mul(&res, &point).Add(&res, &p[i])
+	}
+	return res
 }

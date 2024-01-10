@@ -534,7 +534,7 @@ func (s *instance) deriveGammaAndBeta() error {
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 
-	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+	commit, err = Commit(p.Coefficients(), s.pk.KzgLagrange)
 
 	// we add in the blinding contribution
 	n := int(s.pk.Domain[0].Cardinality)
@@ -687,7 +687,7 @@ func (s *instance) openZ() (err error) {
 	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
 	// open z at zeta
 	// TODO use ICICLE here to accelerate nested commit function
-	s.proof.ZShiftedOpening, err = kzg.Open(s.blindedZ, zetaShifted, s.pk.Kzg)
+	s.proof.ZShiftedOpening, err = Open(s.blindedZ, zetaShifted, s.pk.Kzg)
 	if err != nil {
 		return err
 	}
@@ -813,7 +813,7 @@ func (s *instance) computeLinearizedPolynomial() error {
 
 	var err error
 	// TODO accelerate with ICICLE
-	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	s.linearizedPolynomialDigest, err = Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
