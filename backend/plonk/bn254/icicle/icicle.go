@@ -144,6 +144,7 @@ func (pk *ProvingKey) setupDevicePointers() error {
 
 	// TODO
 	/*************************  G1 Device Setup ***************************/
+	log.Info().Msg("G1 Device Setup")
 
 	return nil
 }
@@ -354,7 +355,6 @@ func (s *instance) initBSB22Commitments() {
 }
 
 // Computing and verifying Bsb22 multi-commits explained in https://hackmd.io/x8KsadW3RRyX7YTCFJIkHg
-// TODO ICICLE
 func (s *instance) bsb22Hint(commDepth int) solver.Hint {
 	return func(_ *big.Int, ins, outs []*big.Int) error {
 		var err error
@@ -374,7 +374,6 @@ func (s *instance) bsb22Hint(commDepth int) solver.Hint {
 			return err
 		}
 		s.cCommitments[commDepth] = iop.NewPolynomial(&committedValues, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
-		// TODO ICICLE
 		if s.proof.Bsb22Commitments[commDepth], err = Commit(s.cCommitments[commDepth].Coefficients(), s.pk.KzgLagrange); err != nil {
 			return err
 		}
@@ -533,6 +532,9 @@ func (s *instance) deriveGammaAndBeta() error {
 // and add the contribution of a blinding polynomial b (small degree)
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
+	log := logger.Logger()
+
+	start := time.Now()
 
 	commit, err = Commit(p.Coefficients(), s.pk.KzgLagrange)
 
@@ -541,6 +543,7 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	cb := commitBlindingFactor(n, b, s.pk.Kzg)
 	commit.Add(&commit, &cb)
 
+	log.Debug().Dur("took", time.Since(start)).Msg("commitToPolyAndBlinding done")
 	return
 }
 
@@ -682,11 +685,11 @@ func (s *instance) openZ() (err error) {
 		return errContextDone
 	case <-s.chH:
 	}
+
 	var zetaShifted fr.Element
 	zetaShifted.Mul(&s.zeta, &s.pk.Vk.Generator)
 	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
 	// open z at zeta
-	// TODO use ICICLE here to accelerate nested commit function
 	s.proof.ZShiftedOpening, err = Open(s.blindedZ, zetaShifted, s.pk.Kzg)
 	if err != nil {
 		return err
@@ -749,8 +752,9 @@ func (s *instance) foldH() error {
 	return nil
 }
 
-// TODO use ICICLE here to accelerate nested commit function
 func (s *instance) computeLinearizedPolynomial() error {
+	log := logger.Logger()
+	start := time.Now()
 
 	// wait for H to be committed and zeta to be derived (or ctx.Done())
 	select {
@@ -812,12 +816,13 @@ func (s *instance) computeLinearizedPolynomial() error {
 	)
 
 	var err error
-	// TODO accelerate with ICICLE
 	s.linearizedPolynomialDigest, err = Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
 	close(s.chLinearizedPolynomial)
+
+	log.Debug().Dur("took", time.Since(start)).Msg("computeLinearizedPolynomial done")
 	return nil
 }
 
@@ -1196,8 +1201,10 @@ func getBlindedCoefficients(p, bp *iop.Polynomial) []fr.Element {
 }
 
 // commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
-// TODO fix ICICLE
 func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
+	log := logger.Logger()
+	start := time.Now()
+
 	// scalars
 	cp := b.Coefficients()
 	np := b.Size()
@@ -1338,6 +1345,8 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 		iciclegnark.FreeDevicePointer(unsafe.Pointer(&resDeviceValue))
 	}()
 
+	log.Debug().Dur("took", time.Since(start)).Msg("commitBlindingFactor done")
+
 	return resAffinePoint
 }
 
@@ -1366,29 +1375,30 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 	return res
 }
 
-// TODO ICICLE
 func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey) error {
-	g := new(errgroup.Group)
+	log := logger.Logger()
+	start := time.Now()
 
-	g.Go(func() (err error) {
-		// TODO ICICLE
-		proof.H[0], err = kzg.Commit(h1, kzgPk)
+	G := new(errgroup.Group)
+
+	G.Go(func() (err error) {
+		proof.H[0], err = Commit(h1, kzgPk)
 		return
 	})
 
-	g.Go(func() (err error) {
-		// TODO ICICLE
-		proof.H[1], err = kzg.Commit(h2, kzgPk)
+	G.Go(func() (err error) {
+		proof.H[1], err = Commit(h2, kzgPk)
 		return
 	})
 
-	g.Go(func() (err error) {
-		// TODO ICICLE
-		proof.H[2], err = kzg.Commit(h3, kzgPk)
+	G.Go(func() (err error) {
+		proof.H[2], err = Commit(h3, kzgPk)
 		return
 	})
 
-	return g.Wait()
+	log.Debug().Dur("took", time.Since(start)).Msg("commitToQuotient done")
+
+	return G.Wait()
 }
 
 // divideByXMinusOne

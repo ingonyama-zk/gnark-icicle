@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
+	"github.com/consensys/gnark/logger"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 )
 
@@ -23,6 +25,10 @@ type Digest = bn254.G1Affine
 // Commit commits to a polynomial using a multi exponentiation with the SRS.
 // It is assumed that the polynomial is in canonical form, in Montgomery form.
 func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
+	log := logger.Logger()
+
+	start := time.Now()
+
 	if len(p) == 0 || len(p) > len(pk.G1) {
 		return Digest{}, ErrInvalidPolynomialSize
 	}
@@ -120,6 +126,7 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 		iciclegnark.FreeDevicePointer(unsafe.Pointer(&tmpDeviceValue))
 	}()
 
+	log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit done")
 	return res, nil
 }
 

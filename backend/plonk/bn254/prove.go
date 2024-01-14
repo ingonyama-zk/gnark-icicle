@@ -523,14 +523,18 @@ func (s *instance) deriveGammaAndBeta() error {
 // and add the contribution of a blinding polynomial b (small degree)
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
+	log := logger.Logger()
+	start := time.Now()
 
 	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+	log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit done")
 
 	// we add in the blinding contribution
 	n := int(s.pk.Domain[0].Cardinality)
 	cb := commitBlindingFactor(n, b, s.pk.Kzg)
 	commit.Add(&commit, &cb)
 
+	log.Debug().Dur("took", time.Since(start)).Msg("commitToPolyAndBlinding done")
 	return
 }
 
@@ -738,6 +742,8 @@ func (s *instance) foldH() error {
 }
 
 func (s *instance) computeLinearizedPolynomial() error {
+	log := logger.Logger()
+	start := time.Now()
 
 	// wait for H to be committed and zeta to be derived (or ctx.Done())
 	select {
@@ -804,6 +810,8 @@ func (s *instance) computeLinearizedPolynomial() error {
 		return err
 	}
 	close(s.chLinearizedPolynomial)
+
+	log.Debug().Dur("took", time.Since(start)).Msg("computeLinearizedPolynomial done")
 	return nil
 }
 
@@ -1182,6 +1190,9 @@ func getBlindedCoefficients(p, bp *iop.Polynomial) []fr.Element {
 
 // commits to a polynomial of the form b*(Xⁿ-1) where b is of small degree
 func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1Affine {
+	log := logger.Logger()
+	start := time.Now()
+
 	cp := b.Coefficients()
 	np := b.Size()
 
@@ -1193,6 +1204,8 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 	var res curve.G1Affine
 	res.MultiExp(key.G1[n:n+np], cp, ecc.MultiExpConfig{})
 	res.Sub(&res, &tmp)
+
+	log.Debug().Dur("took", time.Since(start)).Msg("commitBlindingFactor done")
 	return res
 }
 
@@ -1222,6 +1235,9 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 }
 
 func commitToQuotient(h1, h2, h3 []fr.Element, proof *Proof, kzgPk kzg.ProvingKey) error {
+	log := logger.Logger()
+	start := time.Now()
+
 	g := new(errgroup.Group)
 
 	g.Go(func() (err error) {
@@ -1239,6 +1255,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *Proof, kzgPk kzg.ProvingKe
 		return
 	})
 
+	log.Debug().Dur("took", time.Since(start)).Msg("commitToQuotient done")
 	return g.Wait()
 }
 
@@ -1410,6 +1427,7 @@ func computeLinearizedPolynomial(lZeta, rZeta, oZeta, alpha, beta, gamma, zeta, 
 			blindedZCanonical[i].Add(&t, &t0) // finish the computation
 		}
 	})
+
 	return blindedZCanonical
 }
 
