@@ -82,6 +82,8 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	log := logger.Logger().With().Str("position", "start").Logger()
 	log.Info().Msg("setupDevicePointers")
 
+	start := time.Now()
+	
 	if pk.deviceInfo != nil {
 		return nil
 	}
@@ -146,6 +148,7 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	/*************************  G1 Device Setup ***************************/
 	log.Info().Msg("G1 Device Setup")
 
+	log.Debug().Dur("took", time.Since(start)).Msg("Device Setup Complete")
 	return nil
 }
 
@@ -533,10 +536,10 @@ func (s *instance) deriveGammaAndBeta() error {
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 	log := logger.Logger()
-
 	start := time.Now()
 
 	commit, err = Commit(p.Coefficients(), s.pk.KzgLagrange)
+	log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit done")
 
 	// we add in the blinding contribution
 	n := int(s.pk.Domain[0].Cardinality)

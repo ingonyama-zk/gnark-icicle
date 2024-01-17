@@ -17,7 +17,6 @@
 package plonk
 
 import (
-	"os"
 	"context"
 	"errors"
 	"fmt"
@@ -136,37 +135,37 @@ func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts
 	}
 
 	// solve constraints
-	g.Go(bench(instance.solveConstraints, "solveConstraints"))
+	g.Go(instance.solveConstraints)
 
 	// compute numerator data
-	g.Go(bench(instance.initComputeNumerator, "initComputeNumerator"))
+	g.Go(instance.initComputeNumerator)
 
 	// complete qk
-	g.Go(bench(instance.completeQk, "completeQk"))
+	g.Go(instance.completeQk)
 
 	// init blinding polynomials
-	g.Go(bench(instance.initBlindingPolynomials, "initBlindingPolynomials"))
+	g.Go(instance.initBlindingPolynomials)
 
 	// derive gamma, beta (copy constraint)
-	g.Go(bench(instance.deriveGammaAndBeta, "deriveGammaAndBeta"))
+	g.Go(instance.deriveGammaAndBeta)
 
 	// compute accumulating ratio for the copy constraint
-	g.Go(bench(instance.buildRatioCopyConstraint, "buildRatioCopyConstraint"))
+	g.Go(instance.buildRatioCopyConstraint)
 
 	// compute h
-	g.Go(bench(instance.evaluateConstraints, "evaluateConstraints"))
+	g.Go(instance.evaluateConstraints)
 
 	// open Z (blinded) at ωζ (proof.ZShiftedOpening)
-	g.Go(bench(instance.openZ, "openZ"))
+	g.Go(instance.openZ)
 
 	// fold the commitment to H ([H₀] + ζᵐ⁺²*[H₁] + ζ²⁽ᵐ⁺²⁾[H₂])
-	g.Go(bench(instance.foldH, "foldH"))
+	g.Go(instance.foldH)
 
 	// linearized polynomial
-	g.Go(bench(instance.computeLinearizedPolynomial, "computeLinearizedPolynomial"))
+	g.Go(instance.computeLinearizedPolynomial)
 
 	// Batch opening
-	g.Go(bench(instance.batchOpening, "batchOpening"))
+	g.Go(instance.batchOpening)
 
 	if err := g.Wait(); err != nil {
 		return nil, err
@@ -227,36 +226,6 @@ type instance struct {
 	chFoldedH,
 	chNumeratorInit,
 	chGammaBeta chan struct{}
-}
-
-func bench(fn func() error, name string) func() error {
-	icicle := false 
-
-	suffix := ""
-	if icicle {
-		suffix = "_with_icicle"
-	} else {
-		suffix = "_without_icicle"
-	}
-	// get current date
-	currentDate := time.Now().Format("2006-01-02")
-
-    return func() error {
-        start := time.Now()
-        err := fn()
-        if err != nil {
-            return err
-        }
-		filename := fmt.Sprintf("/home/simon/Ingonyama/gnark-plonky2-verifier/benchmarks/benchmarks_%s%s.txt", currentDate, suffix)
-		file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-        if err != nil {
-            return err
-   }
-        defer file.Close()
-        
-        _, err = fmt.Fprintf(file, "%s - Elapsed time: %s\n", name, time.Since(start))
-        return err
-    }
 }
 
 func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts *backend.ProverConfig) (*instance, error) {
