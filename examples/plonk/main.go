@@ -165,6 +165,7 @@ func main() {
 		}
 
 		err = plonk.Verify(proof, vk, witnessPublic)
+		fmt.Println(err)
 		if err == nil {
 			log.Fatal("Error: wrong proof is accepted")
 		}

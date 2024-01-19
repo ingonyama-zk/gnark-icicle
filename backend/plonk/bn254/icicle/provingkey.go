@@ -12,14 +12,12 @@ import (
 
 type deviceInfo struct {
 	G1Device struct {
-		A, B, K, Z unsafe.Pointer
+		G1         unsafe.Pointer
+		G1Lagrange unsafe.Pointer
 	}
 	DomainDevice struct {
 		Twiddles, TwiddlesInv     unsafe.Pointer
 		CosetTable, CosetTableInv unsafe.Pointer
-	}
-	G2Device struct {
-		B unsafe.Pointer
 	}
 	DenDevice             unsafe.Pointer
 	InfinityPointIndicesK []int

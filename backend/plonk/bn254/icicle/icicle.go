@@ -83,7 +83,7 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	log.Info().Msg("setupDevicePointers")
 
 	start := time.Now()
-	
+
 	if pk.deviceInfo != nil {
 		return nil
 	}
@@ -147,6 +147,16 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	// TODO
 	/*************************  G1 Device Setup ***************************/
 	log.Info().Msg("G1 Device Setup")
+	pointsBytesG1 := len(pk.Kzg.G1) * fp.Bytes * 2
+	copyG1Done := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyPointsToDevice(pk.Kzg.G1, pointsBytesG1, copyG1Done) // Make a function for points
+
+	pointsBytesLagrangeG1 := len(pk.KzgLagrange.G1) * fp.Bytes * 2
+	copyLagrangeG1Done := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyPointsToDevice(pk.KzgLagrange.G1, pointsBytesLagrangeG1, copyLagrangeG1Done) // Make a function for points
+
+	pk.G1Device.G1 = <-copyG1Done
+	pk.G1Device.G1Lagrange = <-copyLagrangeG1Done
 
 	log.Debug().Dur("took", time.Since(start)).Msg("Device Setup Complete")
 	return nil
