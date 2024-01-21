@@ -144,7 +144,6 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	pk.DomainDevice.CosetTable = <-copyCosetDone
 	pk.DenDevice = <-copyDenDone
 
-	// TODO
 	/*************************  G1 Device Setup ***************************/
 	log.Info().Msg("G1 Device Setup")
 	pointsBytesG1 := len(pk.Kzg.G1) * fp.Bytes * 2
@@ -371,7 +370,6 @@ func (s *instance) initBSB22Commitments() {
 func (s *instance) bsb22Hint(commDepth int) solver.Hint {
 	return func(_ *big.Int, ins, outs []*big.Int) error {
 		var err error
-
 		res := &s.commitmentVal[commDepth]
 
 		commitmentInfo := s.spr.CommitmentInfo.(constraint.PlonkCommitments)[commDepth]
@@ -553,11 +551,104 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 
 	// we add in the blinding contribution
 	n := int(s.pk.Domain[0].Cardinality)
-	cb := commitBlindingFactor(n, b, s.pk.Kzg)
+
+	// Run commitToPolyAndBlinding on device
+	cb := deviceCommitBlindingFactor(n, b, s.pk)
+	//fmt.Println("res", cb)
+
 	commit.Add(&commit, &cb)
 
 	log.Debug().Dur("took", time.Since(start)).Msg("commitToPolyAndBlinding done")
 	return
+}
+
+// deviceCommitBlindingFactor computes the blindingFactor of a polynomial p on the device
+func deviceCommitBlindingFactor(n int, b *iop.Polynomial, pk *ProvingKey) curve.G1Affine {
+	// scalars
+	cp := b.Coefficients()
+	np := b.Size()
+
+	// get slice of points from unsafe pointer
+	resPtr := unsafe.Pointer(uintptr(unsafe.Pointer(pk.G1Device.G1)) + uintptr(n)*unsafe.Sizeof(curve.G1Affine{}))
+
+	// Initialize channels
+	copyCpDone := make(chan unsafe.Pointer, 1)
+	cpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
+
+	// Start asynchronous routine
+	go func() {
+
+		// tbd mul * 2
+		sizeBytesScalars := np * fr.Bytes
+
+		// Perform copy operation
+		iciclegnark.CopyToDevice(cp, sizeBytesScalars, copyCpDone)
+
+		// Receive result once copy operation is done
+		cpDevice := <-copyCpDone
+
+		// Create OnDeviceData
+		cpDeviceValue := iciclegnark.OnDeviceData{
+			P:    cpDevice,
+			Size: sizeBytesScalars,
+		}
+
+		// Send OnDeviceData to respective channel
+		cpDeviceData <- cpDeviceValue
+
+		// Close channels
+		close(copyCpDone)
+		close(cpDeviceData)
+	}()
+
+	// Wait for copy operation to finish
+	cpDeviceValue := <-cpDeviceData
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	tmpChan := make(chan curve.G1Affine, 1)
+	go func() {
+		defer wg.Done()
+		tmpVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, pk.G1Device.G1, np, true)
+		if err != nil {
+			fmt.Print("Error", err)
+		}
+		var tmp curve.G1Affine
+		tmp.FromJacobian(&tmpVal)
+		tmpChan <- tmp
+	}()
+	wg.Wait()
+
+	tmpAffinePoint := <-tmpChan
+
+	// Calculate(hi) commitment on Device
+	wg.Add(1)
+	resChan := make(chan curve.G1Affine, 1)
+	go func() {
+		defer wg.Done()
+
+		resVal, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, resPtr, np, true)
+		if err != nil {
+			fmt.Print("Error", err)
+		}
+		var res curve.G1Affine
+		res.FromJacobian(&resVal)
+
+		resChan <- res
+	}()
+	wg.Wait()
+	resAffinePoint := <-resChan
+
+	// Sub(lo, hi) to get the final commitment
+	resAffinePoint.Sub(&resAffinePoint, &tmpAffinePoint)
+
+	// Free device memory
+	go func() {
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&cpDeviceValue))
+	}()
+
+	return resAffinePoint
 }
 
 func (s *instance) deriveAlpha() (err error) {
@@ -1323,8 +1414,8 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 		}
 		var tmp curve.G1Affine
 		tmp.FromJacobian(&tmpVal)
-		tmpChan <- tmp
 		//fmt.Println("MSM(tmp) on GPU", tmp)
+		tmpChan <- tmp
 	}()
 	wg.Wait()
 
@@ -1343,7 +1434,7 @@ func commitBlindingFactor(n int, b *iop.Polynomial, key kzg.ProvingKey) curve.G1
 		var res curve.G1Affine
 		res.FromJacobian(&resVal)
 		resChan <- res
-		//fmt.Println("MSM(res) on GPU", resAffinePoint)
+		//fmt.Println("MSM(res) on GPU", res)
 	}()
 	wg.Wait()
 
