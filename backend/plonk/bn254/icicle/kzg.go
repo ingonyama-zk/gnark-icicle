@@ -22,6 +22,74 @@ type Digest = bn254.G1Affine
 
 // Commit commits to a polynomial using a multi exponentiation with the SRS.
 // It is assumed that the polynomial is in canonical form, in Montgomery form.
+func kzgDeviceCommit(p []fr.Element, pk *ProvingKey, nbTasks ...int) (Digest, error) {
+	// Size of the polynomial
+	np := len(p)
+
+	// Size of the polynomial in bytes
+	sizeBytesScalars := np * fr.Bytes
+
+	// Initialize Scalar channels
+	copyCpDone := make(chan unsafe.Pointer, 1)
+	cpDeviceData := make(chan iciclegnark.OnDeviceData, 1)
+
+	// Copy Scalar to device
+	go func() {
+		// Perform copy operation
+		iciclegnark.CopyToDevice(p, sizeBytesScalars, copyCpDone)
+
+		// Receive result once copy operation is done
+		cpDevice := <-copyCpDone
+
+		// Create OnDeviceData
+		cpDeviceValue := iciclegnark.OnDeviceData{
+			P:    cpDevice,
+			Size: sizeBytesScalars,
+		}
+
+		// Send OnDeviceData to respective channel
+		cpDeviceData <- cpDeviceValue
+
+		// Close channels
+		close(copyCpDone)
+		close(cpDeviceData)
+	}()
+
+	// Wait for copy operation to finish
+	cpDeviceValue := <-cpDeviceData
+
+	// KZG Committment on device
+	var wg sync.WaitGroup
+
+	// Perform multi exponentiation on device
+	wg.Add(1)
+	tmpChan := make(chan bn254.G1Affine, 1)
+	go func() {
+		defer wg.Done()
+		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, pk.G1Device.G1Lagrange, np, true)
+		//fmt.Println("tmp", tmp)
+		if err != nil {
+			fmt.Print("error", err)
+		}
+		var res bn254.G1Affine
+		res.FromJacobian(&tmp)
+		tmpChan <- res
+	}()
+	wg.Wait()
+
+	// Receive result once copy operation is done
+	res := <-tmpChan
+
+	// Free device memory
+	go func() {
+		iciclegnark.FreeDevicePointer(unsafe.Pointer(&cpDeviceValue))
+	}()
+
+	return res, nil
+}
+
+// Commit commits to a polynomial using a multi exponentiation with the SRS.
+// It is assumed that the polynomial is in canonical form, in Montgomery form.
 func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 	if len(p) == 0 || len(p) > len(pk.G1) {
 		return Digest{}, ErrInvalidPolynomialSize

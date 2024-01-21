@@ -549,8 +549,9 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	ch1 := make(chan curve.G1Affine, 1)
 	ch2 := make(chan curve.G1Affine, 1)
 
+	// Run kzg commit on device
 	go func() {
-		c, err := Commit(p.Coefficients(), s.pk.KzgLagrange)
+		c, err := kzgDeviceCommit(p.Coefficients(), s.pk)
 		if err != nil {
 			log.Error().Err(err).Msg("Error during Commit")
 		}
@@ -558,8 +559,8 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	}()
 	commit = <-ch1
 
+	// Run commitToPolyAndBlinding on device
 	go func() {
-		// Run commitToPolyAndBlinding on device
 		n := int(s.pk.Domain[0].Cardinality)
 		cb := deviceCommitBlindingFactor(n, b, s.pk)
 		ch2 <- cb
@@ -616,6 +617,7 @@ func deviceCommitBlindingFactor(n int, b *iop.Polynomial, pk *ProvingKey) curve.
 
 	var wg sync.WaitGroup
 
+	// Calculate() commitment on Device
 	wg.Add(1)
 	tmpChan := make(chan curve.G1Affine, 1)
 	go func() {
