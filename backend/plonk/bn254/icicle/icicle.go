@@ -546,15 +546,25 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	log := logger.Logger()
 	start := time.Now()
 
-	commit, err = Commit(p.Coefficients(), s.pk.KzgLagrange)
-	log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit done")
+	ch1 := make(chan curve.G1Affine, 1)
+	ch2 := make(chan curve.G1Affine, 1)
 
-	// we add in the blinding contribution
-	n := int(s.pk.Domain[0].Cardinality)
+	go func() {
+		c, err := Commit(p.Coefficients(), s.pk.KzgLagrange)
+		if err != nil {
+			log.Error().Err(err).Msg("Error during Commit")
+		}
+		ch1 <- c
+	}()
+	commit = <-ch1
 
-	// Run commitToPolyAndBlinding on device
-	cb := deviceCommitBlindingFactor(n, b, s.pk)
-	//fmt.Println("res", cb)
+	go func() {
+		// Run commitToPolyAndBlinding on device
+		n := int(s.pk.Domain[0].Cardinality)
+		cb := deviceCommitBlindingFactor(n, b, s.pk)
+		ch2 <- cb
+	}()
+	cb := <-ch2
 
 	commit.Add(&commit, &cb)
 
