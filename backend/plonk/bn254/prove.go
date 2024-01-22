@@ -713,9 +713,6 @@ func (s *instance) foldH() error {
 }
 
 func (s *instance) computeLinearizedPolynomial() error {
-	log := logger.Logger()
-	start := time.Now()
-
 	// wait for H to be committed and zeta to be derived (or ctx.Done())
 	select {
 	case <-s.ctx.Done():
@@ -759,6 +756,9 @@ func (s *instance) computeLinearizedPolynomial() error {
 	bzuzeta := s.proof.ZShiftedOpening.ClaimedValue
 
 	wg.Wait()
+
+	log := logger.Logger()
+	start := time.Now()
 
 	s.linearizedPolynomial = computeLinearizedPolynomial(
 		blzeta,
