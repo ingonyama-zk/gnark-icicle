@@ -551,29 +551,36 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 
 	// Run kzg commit on device
 	go func() {
+		start := time.Now()
 		c, err := kzgDeviceCommit(p.Coefficients(), s.pk)
 		if err != nil {
 			log.Error().Err(err).Msg("Error during Commit")
 		}
 		ch1 <- c
+		elapsed := time.Since(start)
+		log.Printf("KZG Commit took %s", elapsed)
 	}()
 	commit = <-ch1
 
 	// Run commitToPolyAndBlinding on device
 	go func() {
+		start := time.Now()
 		n := int(s.pk.Domain[0].Cardinality)
 		cb := deviceCommitBlindingFactor(n, b, s.pk)
 		ch2 <- cb
+		elapsed := time.Since(start)
+		log.Printf("Blinding Commit took %s", elapsed)
 	}()
-	cb := <-ch2
+	blinding := <-ch2
 
-	commit.Add(&commit, &cb)
+	commit.Add(&commit, &blinding)
 
 	log.Debug().Dur("took", time.Since(start)).Msg("commitToPolyAndBlinding done")
 	return
 }
 
 // deviceCommitBlindingFactor computes the blindingFactor of a polynomial p on the device
+// size of vectors for len of the polynomial - give idea of what the performance means
 func deviceCommitBlindingFactor(n int, b *iop.Polynomial, pk *ProvingKey) curve.G1Affine {
 	// scalars
 	cp := b.Coefficients()
@@ -617,7 +624,7 @@ func deviceCommitBlindingFactor(n int, b *iop.Polynomial, pk *ProvingKey) curve.
 
 	var wg sync.WaitGroup
 
-	// Calculate() commitment on Device
+	// Calculate(lo) commitment on Device
 	wg.Add(1)
 	tmpChan := make(chan curve.G1Affine, 1)
 	go func() {
