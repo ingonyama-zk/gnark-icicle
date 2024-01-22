@@ -776,10 +776,13 @@ func (s *instance) computeLinearizedPolynomial() error {
 	)
 
 	var err error
+	timeCommit := time.Now()
 	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
+	elapsed := time.Since(timeCommit)
+	log.Printf("KZG Commit took %s", elapsed)
 	close(s.chLinearizedPolynomial)
 
 	log.Debug().Dur("took", time.Since(start)).Msg("computeLinearizedPolynomial done")
