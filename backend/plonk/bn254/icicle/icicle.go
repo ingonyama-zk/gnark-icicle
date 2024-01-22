@@ -747,7 +747,8 @@ func (s *instance) evaluateConstraints() (err error) {
 	}
 
 	// commit to h
-	if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg); err != nil {
+	//if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg); err != nil {
+	if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk); err != nil {
 		return err
 	}
 
@@ -838,7 +839,6 @@ func (s *instance) h3() []fr.Element {
 }
 
 // fold the commitment to H ([H₀] + ζᵐ⁺²*[H₁] + ζ²⁽ᵐ⁺²⁾[H₂])
-// TODO find ICICLE NTT
 func (s *instance) foldH() error {
 	// wait for H to be committed and zeta to be derived (or ctx.Done())
 	select {
@@ -1355,7 +1355,7 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 	return res
 }
 
-func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey) error {
+func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *ProvingKey) error {
 	log := logger.Logger()
 	log.Print("commitToQuotient")
 	start := time.Now()
@@ -1364,7 +1364,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk k
 
 	G.Go(func() (err error) {
 		start := time.Now()
-		proof.H[0], err = Commit(h1, kzgPk)
+		proof.H[0], err = kzgDeviceCommit(h1, kzgPk)
 		elapsed := time.Since(start)
 		log.Printf("KZG Commit took %s", elapsed)
 		return
@@ -1372,7 +1372,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk k
 
 	G.Go(func() (err error) {
 		start := time.Now()
-		proof.H[1], err = Commit(h2, kzgPk)
+		proof.H[1], err = kzgDeviceCommit(h2, kzgPk)
 		elapsed := time.Since(start)
 		log.Printf("KZG Commit took %s", elapsed)
 		return
@@ -1380,7 +1380,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk k
 
 	G.Go(func() (err error) {
 		start := time.Now()
-		proof.H[2], err = Commit(h3, kzgPk)
+		proof.H[2], err = kzgDeviceCommit(h3, kzgPk)
 		elapsed := time.Since(start)
 		log.Printf("KZG Commit took %s", elapsed)
 		return
