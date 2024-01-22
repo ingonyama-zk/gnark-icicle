@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"hash"
-	"log"
 	"math/big"
 	"math/bits"
 	"runtime"
@@ -558,8 +557,7 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 			log.Error().Err(err).Msg("Error during Commit")
 		}
 		ch1 <- c
-		elapsed := time.Since(start)
-		log.Printf("KZG Commit took %s", elapsed)
+		log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 	}()
 	commit = <-ch1
 
@@ -569,14 +567,13 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 		n := int(s.pk.Domain[0].Cardinality)
 		cb := deviceCommitBlindingFactor(n, b, s.pk)
 		ch2 <- cb
-		elapsed := time.Since(start)
-		log.Printf("Blinding Commit took %s", elapsed)
+		log.Debug().Dur("took", time.Since(start)).Msg("Blinding Commit")
 	}()
 	blinding := <-ch2
 
 	commit.Add(&commit, &blinding)
 
-	log.Debug().Dur("took", time.Since(start)).Msg("commitToPolyAndBlinding done")
+	log.Debug().Dur("took", time.Since(start)).Msg("commitToPolyAndBlinding")
 	return
 }
 
@@ -688,6 +685,8 @@ func (s *instance) deriveZeta() (err error) {
 
 // evaluateConstraints computes H
 func (s *instance) evaluateConstraints() (err error) {
+	log := logger.Logger()
+
 	// clone polys from the proving key.
 	s.x[id_Ql] = s.pk.GetTrace().Ql.Clone()
 	s.x[id_Qr] = s.pk.GetTrace().Qr.Clone()
@@ -706,22 +705,26 @@ func (s *instance) evaluateConstraints() (err error) {
 	lone[0].SetOne()
 
 	// wait for solver to be done
+	start := time.Now()
 	select {
 	case <-s.ctx.Done():
 		return errContextDone
 	case <-s.chLRO:
 	}
+	log.Debug().Dur("took", time.Since(start)).Msg("Solver Done")
 
 	for i := 0; i < len(s.commitmentInfo); i++ {
 		s.x[id_Qci+2*i+1] = s.cCommitments[i].Clone()
 	}
 
 	// wait for Z to be committed or context done
+	start = time.Now()
 	select {
 	case <-s.ctx.Done():
 		return errContextDone
 	case <-s.chZ:
 	}
+	log.Debug().Dur("took", time.Since(start)).Msg("Z Committed")
 
 	// derive alpha
 	if err = s.deriveAlpha(); err != nil {
@@ -946,14 +949,16 @@ func (s *instance) computeLinearizedPolynomial() error {
 		return err
 	}
 	elapsed := time.Since(timeCommit)
+
 	log.Printf("KZG Commit took %s", elapsed)
 	close(s.chLinearizedPolynomial)
-
-	log.Debug().Dur("took", time.Since(start)).Msg("computeLinearizedPolynomial done")
+	log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 	return nil
 }
 
 func (s *instance) batchOpening() error {
+	log := logger.Logger()
+
 	polysQcp := coefficients(s.pk.GetTrace().Qcp)
 	polysToOpen := make([][]fr.Element, 7+len(polysQcp))
 	copy(polysToOpen[7:], polysQcp)
@@ -1009,8 +1014,7 @@ func (s *instance) batchOpening() error {
 		s.pk.Kzg,
 		s.proof.ZShiftedOpening.ClaimedValue.Marshal(),
 	)
-	elapsed := time.Since(start)
-	log.Printf("batchOpeningSinglePoint took %s", elapsed)
+	log.Debug().Dur("took", time.Since(start)).Msg("batchOpeningSinglePoint")
 
 	return err
 }
@@ -1357,7 +1361,6 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 
 func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *ProvingKey) error {
 	log := logger.Logger()
-	log.Print("commitToQuotient")
 	start := time.Now()
 
 	G := new(errgroup.Group)
@@ -1365,28 +1368,25 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[0], err = kzgDeviceCommit(h1, kzgPk)
-		elapsed := time.Since(start)
-		log.Printf("KZG Commit took %s", elapsed)
+		log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 		return
 	})
 
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[1], err = kzgDeviceCommit(h2, kzgPk)
-		elapsed := time.Since(start)
-		log.Printf("KZG Commit took %s", elapsed)
+		log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 		return
 	})
 
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[2], err = kzgDeviceCommit(h3, kzgPk)
-		elapsed := time.Since(start)
-		log.Printf("KZG Commit took %s", elapsed)
+		log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 		return
 	})
 
-	log.Debug().Dur("took", time.Since(start)).Msg("commitToQuotient done")
+	log.Debug().Dur("took", time.Since(start)).Msg("commitToQuotient")
 
 	return G.Wait()
 }
