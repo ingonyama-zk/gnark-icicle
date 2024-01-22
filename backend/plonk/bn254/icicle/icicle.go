@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log"
 	"math/big"
 	"math/bits"
 	"runtime"
@@ -996,6 +997,7 @@ func (s *instance) batchOpening() error {
 
 	var err error
 	// TODO ICICLE this section can be accelerated bc kzg commit is called
+	start := time.Now()
 	s.proof.BatchedProof, err = kzg.BatchOpenSinglePoint(
 		polysToOpen,
 		digestsToOpen,
@@ -1004,6 +1006,8 @@ func (s *instance) batchOpening() error {
 		s.pk.Kzg,
 		s.proof.ZShiftedOpening.ClaimedValue.Marshal(),
 	)
+	elapsed := time.Since(start)
+	log.Printf("batchOpeningSinglePoint took %s", elapsed)
 
 	return err
 }
@@ -1350,22 +1354,32 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 
 func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey) error {
 	log := logger.Logger()
+	log.Print("commitToQuotient")
 	start := time.Now()
 
 	G := new(errgroup.Group)
 
 	G.Go(func() (err error) {
+		start := time.Now()
 		proof.H[0], err = Commit(h1, kzgPk)
+		elapsed := time.Since(start)
+		log.Printf("KZG Commit took %s", elapsed)
 		return
 	})
 
 	G.Go(func() (err error) {
+		start := time.Now()
 		proof.H[1], err = Commit(h2, kzgPk)
+		elapsed := time.Since(start)
+		log.Printf("KZG Commit took %s", elapsed)
 		return
 	})
 
 	G.Go(func() (err error) {
+		start := time.Now()
 		proof.H[2], err = Commit(h3, kzgPk)
+		elapsed := time.Since(start)
+		log.Printf("KZG Commit took %s", elapsed)
 		return
 	})
 
