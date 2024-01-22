@@ -26,6 +26,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"log"
 
 	"golang.org/x/sync/errgroup"
 
@@ -493,6 +494,7 @@ func (s *instance) deriveGammaAndBeta() error {
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 	log := logger.Logger()
+	log.Print("commitToPolyAndBlinding")
 	start := time.Now()
 
 	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
@@ -830,6 +832,7 @@ func (s *instance) batchOpening() error {
 	digestsToOpen[6] = s.pk.Vk.S[1]
 
 	var err error
+	start := time.Now()
 	s.proof.BatchedProof, err = kzg.BatchOpenSinglePoint(
 		polysToOpen,
 		digestsToOpen,
@@ -838,6 +841,8 @@ func (s *instance) batchOpening() error {
 		s.pk.Kzg,
 		s.proof.ZShiftedOpening.ClaimedValue.Marshal(),
 	)
+	elapsed := time.Since(start)
+	log.Printf("batchOpeningSinglePoint took %s", elapsed)
 
 	return err
 }
@@ -1205,22 +1210,32 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 
 func commitToQuotient(h1, h2, h3 []fr.Element, proof *Proof, kzgPk kzg.ProvingKey) error {
 	log := logger.Logger()
+	log.Print("commitToQuotient")
 	start := time.Now()
 
 	g := new(errgroup.Group)
 
 	g.Go(func() (err error) {
+		start := time.Now()
 		proof.H[0], err = kzg.Commit(h1, kzgPk)
+		elapsed := time.Since(start)
+		log.Printf("KZG Commit took %s", elapsed)
 		return
 	})
 
 	g.Go(func() (err error) {
+		start := time.Now()
 		proof.H[1], err = kzg.Commit(h2, kzgPk)
+		elapsed := time.Since(start)
+		log.Printf("KZG Commit took %s", elapsed)
 		return
 	})
 
 	g.Go(func() (err error) {
+		start := time.Now()
 		proof.H[2], err = kzg.Commit(h3, kzgPk)
+		elapsed := time.Since(start)
+		log.Printf("KZG Commit took %s", elapsed)
 		return
 	})
 
