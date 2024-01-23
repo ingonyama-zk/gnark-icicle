@@ -22,7 +22,7 @@ type Digest = bn254.G1Affine
 
 // Commit commits to a polynomial using a multi exponentiation with the SRS.
 // It is assumed that the polynomial is in canonical form, in Montgomery form.
-func kzgDeviceCommit(p []fr.Element, pk *ProvingKey, nbTasks ...int) (Digest, error) {
+func kzgDeviceCommit(p []fr.Element, G1 unsafe.Pointer, nbTasks ...int) (Digest, error) {
 	// Size of the polynomial
 	np := len(p)
 
@@ -66,7 +66,7 @@ func kzgDeviceCommit(p []fr.Element, pk *ProvingKey, nbTasks ...int) (Digest, er
 	tmpChan := make(chan bn254.G1Affine, 1)
 	go func() {
 		defer wg.Done()
-		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, pk.G1Device.G1Lagrange, np, true)
+		tmp, _, err := iciclegnark.MsmOnDevice(cpDeviceValue.P, G1, np, true)
 		//fmt.Println("tmp", tmp)
 		if err != nil {
 			fmt.Print("error", err)
@@ -206,7 +206,7 @@ func Open(p []fr.Element, point fr.Element, pk *ProvingKey) (kzg.OpeningProof, e
 	h := dividePolyByXminusA(_p, res.ClaimedValue, point)
 
 	// commit to H
-	hCommit, err := kzgDeviceCommit(h, pk)
+	hCommit, err := kzgDeviceCommit(h, pk.G1Device.G1)
 	if err != nil {
 		return kzg.OpeningProof{}, err
 	}

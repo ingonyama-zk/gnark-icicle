@@ -552,7 +552,8 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	// Run kzg commit on device
 	go func() {
 		start := time.Now()
-		c, err := kzgDeviceCommit(p.Coefficients(), s.pk)
+		c, err := kzgDeviceCommit(p.Coefficients(), s.pk.G1Device.G1Lagrange)
+		//c, err := kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
 		if err != nil {
 			log.Error().Err(err).Msg("Error during Commit")
 		}
@@ -947,7 +948,8 @@ func (s *instance) computeLinearizedPolynomial() error {
 
 	var err error
 	timeCommit := time.Now()
-	s.linearizedPolynomialDigest, err = kzgDeviceCommit(s.linearizedPolynomial, s.pk, runtime.NumCPU()*2)
+	//s.linearizedPolynomialDigest, err = kzgDeviceCommit(s.linearizedPolynomial, s.pk, runtime.NumCPU()*2)
+	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
@@ -1375,21 +1377,24 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 
 	G.Go(func() (err error) {
 		start := time.Now()
-		proof.H[0], err = kzgDeviceCommit(h1, kzgPk)
+		proof.H[0], err = kzgDeviceCommit(h1, kzgPk.G1Device.G1)
+		//proof.H[0], err = kzg.Commit(h1, kzgPk.Kzg)
 		log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 		return
 	})
 
 	G.Go(func() (err error) {
 		start := time.Now()
-		proof.H[1], err = kzgDeviceCommit(h2, kzgPk)
+		proof.H[1], err = kzgDeviceCommit(h2, kzgPk.G1Device.G1)
+		//proof.H[1], err = kzg.Commit(h2, kzgPk.Kzg)
 		log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 		return
 	})
 
 	G.Go(func() (err error) {
 		start := time.Now()
-		proof.H[2], err = kzgDeviceCommit(h3, kzgPk)
+		proof.H[2], err = kzgDeviceCommit(h3, kzgPk.G1Device.G1)
+		//proof.H[2], err = kzg.Commit(h3, kzgPk.Kzg)
 		log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
 		return
 	})
