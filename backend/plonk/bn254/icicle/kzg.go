@@ -193,11 +193,7 @@ func Commit(p []fr.Element, pk kzg.ProvingKey, nbTasks ...int) (Digest, error) {
 
 // Open computes an opening proof of polynomial p at given point.
 // fft.Domain Cardinality must be larger than p.Degree()
-func Open(p []fr.Element, point fr.Element, pk kzg.ProvingKey) (kzg.OpeningProof, error) {
-	if len(p) == 0 || len(p) > len(pk.G1) {
-		return kzg.OpeningProof{}, ErrInvalidPolynomialSize
-	}
-
+func Open(p []fr.Element, point fr.Element, pk *ProvingKey) (kzg.OpeningProof, error) {
 	// build the proof
 	res := kzg.OpeningProof{
 		ClaimedValue: eval(p, point),
@@ -210,7 +206,7 @@ func Open(p []fr.Element, point fr.Element, pk kzg.ProvingKey) (kzg.OpeningProof
 	h := dividePolyByXminusA(_p, res.ClaimedValue, point)
 
 	// commit to H
-	hCommit, err := Commit(h, pk)
+	hCommit, err := kzgDeviceCommit(h, pk)
 	if err != nil {
 		return kzg.OpeningProof{}, err
 	}

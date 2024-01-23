@@ -26,7 +26,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-	"log"
 
 	"golang.org/x/sync/errgroup"
 
@@ -121,7 +120,6 @@ func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts
 
 	// parse the options
 	opt, err := backend.NewProverConfig(opts...)
-	fmt.Print(opt)
 	if err != nil {
 		return nil, fmt.Errorf("get prover options: %w", err)
 	}
@@ -526,6 +524,7 @@ func (s *instance) deriveZeta() (err error) {
 
 // evaluateConstraints computes H
 func (s *instance) evaluateConstraints() (err error) {
+	log := logger.Logger()
 	// clone polys from the proving key.
 	s.x[id_Ql] = s.pk.trace.Ql.Clone()
 	s.x[id_Qr] = s.pk.trace.Qr.Clone()
@@ -549,6 +548,7 @@ func (s *instance) evaluateConstraints() (err error) {
 		return errContextDone
 	case <-s.chLRO:
 	}
+	log.Printf("Solver Done")
 
 	for i := 0; i < len(s.commitmentInfo); i++ {
 		s.x[id_Qci+2*i+1] = s.cCommitments[i].Clone()
@@ -560,6 +560,7 @@ func (s *instance) evaluateConstraints() (err error) {
 		return errContextDone
 	case <-s.chZ:
 	}
+	log.Printf("Z Committed")
 
 	// derive alpha
 	if err = s.deriveAlpha(); err != nil {
@@ -790,6 +791,8 @@ func (s *instance) computeLinearizedPolynomial() error {
 }
 
 func (s *instance) batchOpening() error {
+	log := logger.Logger()
+
 	polysQcp := coefficients(s.pk.trace.Qcp)
 	polysToOpen := make([][]fr.Element, 7+len(polysQcp))
 	copy(polysToOpen[7:], polysQcp)

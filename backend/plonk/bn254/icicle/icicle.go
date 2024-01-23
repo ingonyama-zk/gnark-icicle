@@ -818,7 +818,7 @@ func (s *instance) openZ() (err error) {
 	zetaShifted.Mul(&s.zeta, &s.pk.Vk.Generator)
 	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
 	// open z at zeta
-	s.proof.ZShiftedOpening, err = Open(s.blindedZ, zetaShifted, s.pk.Kzg)
+	s.proof.ZShiftedOpening, err = Open(s.blindedZ, zetaShifted, s.pk)
 	if err != nil {
 		return err
 	}
@@ -948,11 +948,10 @@ func (s *instance) computeLinearizedPolynomial() error {
 	if err != nil {
 		return err
 	}
-	elapsed := time.Since(timeCommit)
-
-	log.Printf("KZG Commit took %s", elapsed)
+	log.Debug().Dur("took", time.Since(timeCommit)).Msg("KZG Commit")
 	close(s.chLinearizedPolynomial)
-	log.Debug().Dur("took", time.Since(start)).Msg("KZG Commit")
+
+	log.Debug().Dur("took", time.Since(start)).Msg("computeLinearizedPolynomial")
 	return nil
 }
 
