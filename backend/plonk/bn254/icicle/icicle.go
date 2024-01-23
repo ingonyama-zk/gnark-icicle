@@ -1183,7 +1183,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		// (Ql, Qr, Qm, Qo, S1, S2, S3, Qcp, Qc) and ID, LOne
 		// we could pre-compute theses rho*2 FFTs and store them
 		// at the cost of a huge memory footprint.
-		baTime := time.Now()
+		batchTime := time.Now()
 		batchApply(s.x, func(p *iop.Polynomial) {
 			nbTasks := calculateNbTasks(len(s.x)-1) * 2
 			// shift polynomials to be in the correct coset
@@ -1202,7 +1202,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			// fft in the correct coset
 			p.ToLagrange(&s.pk.Domain[0], nbTasks).ToRegular()
 		})
-		log.Debug().Dur("took", time.Since(baTime)).Msg("batchApply(FFT)")
+		log.Debug().Dur("took", time.Since(batchTime)).Msg("batchApply(FFT)")
 
 		wgBuf.Wait()
 		if _, err := iop.Evaluate(
