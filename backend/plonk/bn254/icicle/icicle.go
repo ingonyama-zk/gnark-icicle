@@ -17,7 +17,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
-
 	"github.com/consensys/gnark-crypto/ecc/bn254/fp"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
@@ -385,7 +384,7 @@ func (s *instance) bsb22Hint(commDepth int) solver.Hint {
 			return err
 		}
 		s.cCommitments[commDepth] = iop.NewPolynomial(&committedValues, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
-		if s.proof.Bsb22Commitments[commDepth], err = Commit(s.cCommitments[commDepth].Coefficients(), s.pk.KzgLagrange); err != nil {
+		if s.proof.Bsb22Commitments[commDepth], err = kzgDeviceCommit(s.cCommitments[commDepth].Coefficients(), unsafe.Pointer(&s.pk.G1Device.G1Lagrange)); err != nil {
 			return err
 		}
 		s.cCommitments[commDepth].ToCanonical(&s.pk.Domain[0]).ToRegular()
