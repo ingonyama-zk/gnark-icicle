@@ -807,6 +807,7 @@ func (s *instance) buildRatioCopyConstraint() (err error) {
 
 // open Z (blinded) at ωζ
 func (s *instance) openZ() (err error) {
+	log := logger.Logger()
 	// wait for H to be committed and zeta to be derived (or ctx.Done())
 	select {
 	case <-s.ctx.Done():
@@ -818,10 +819,12 @@ func (s *instance) openZ() (err error) {
 	zetaShifted.Mul(&s.zeta, &s.pk.Vk.Generator)
 	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
 	// open z at zeta
+	start := time.Now()
 	s.proof.ZShiftedOpening, err = Open(s.blindedZ, zetaShifted, s.pk)
 	if err != nil {
 		return err
 	}
+	log.Debug().Dur("took", time.Since(start)).Msg("Z Opened (KZG Commit)")
 	close(s.chZOpening)
 	return nil
 }
@@ -1021,6 +1024,9 @@ func (s *instance) batchOpening() error {
 // evaluate the full set of constraints, all polynomials in x are back in
 // canonical regular form at the end
 func (s *instance) computeNumerator() (*iop.Polynomial, error) {
+	log := logger.Logger()
+	start := time.Now()
+
 	n := s.pk.Domain[0].Cardinality
 
 	nbBsbGates := (len(s.x) - id_Qci + 1) >> 1
@@ -1175,6 +1181,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		// (Ql, Qr, Qm, Qo, S1, S2, S3, Qcp, Qc) and ID, LOne
 		// we could pre-compute theses rho*2 FFTs and store them
 		// at the cost of a huge memory footprint.
+		baTime := time.Now()
 		batchApply(s.x, func(p *iop.Polynomial) {
 			nbTasks := calculateNbTasks(len(s.x)-1) * 2
 			// shift polynomials to be in the correct coset
@@ -1193,6 +1200,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			// fft in the correct coset
 			p.ToLagrange(&s.pk.Domain[0], nbTasks).ToRegular()
 		})
+		log.Debug().Dur("took", time.Since(baTime)).Msg("batchApply(FFT)")
 
 		wgBuf.Wait()
 		if _, err := iop.Evaluate(
@@ -1252,6 +1260,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 	res := iop.NewPolynomial(&cres, iop.Form{Basis: iop.LagrangeCoset, Layout: iop.BitReverse})
 
+	log.Debug().Dur("took", time.Since(start)).Msg("computeNumerator")
 	return res, nil
 
 }
