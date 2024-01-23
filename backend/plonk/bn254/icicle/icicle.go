@@ -947,8 +947,7 @@ func (s *instance) computeLinearizedPolynomial() error {
 
 	var err error
 	timeCommit := time.Now()
-	//s.linearizedPolynomialDigest, err = kzgDeviceCommit(s.linearizedPolynomial, s.pk, runtime.NumCPU()*2)
-	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	s.linearizedPolynomialDigest, err = kzgDeviceCommit(s.linearizedPolynomial, s.pk.G1Device.G1, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
