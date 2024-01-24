@@ -1238,6 +1238,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 	// scale everything back
 	go func() {
+		batchTime := time.Now()
 		for i := id_ZS; i < len(s.x); i++ {
 			s.x[i] = nil
 		}
@@ -1258,6 +1259,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			scalePowers(q, cs)
 		}
 
+		log.Debug().Dur("took", time.Since(batchTime)).Msg("Scale back batchApply(FFT)")
 		close(s.chRestoreLRO)
 	}()
 
@@ -1413,6 +1415,8 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 // The result is in Canonical Regular. (in place using a)
 // TODO ICICLE NTT
 func divideByXMinusOne(a *iop.Polynomial, domains [2]*fft.Domain) (*iop.Polynomial, error) {
+	log := logger.Logger()
+	start := time.Now()
 
 	// check that the basis is LagrangeCoset
 	if a.Basis != iop.LagrangeCoset || a.Layout != iop.BitReverse {
@@ -1436,7 +1440,7 @@ func divideByXMinusOne(a *iop.Polynomial, domains [2]*fft.Domain) (*iop.Polynomi
 
 	// since a is in bit reverse order, ToRegular shouldn't do anything
 	a.ToCanonical(domains[1]).ToRegular()
-
+	log.Debug().Dur("took", time.Since(start)).Msg("FFT (divideByXMinusOne):")
 	return a, nil
 
 }
