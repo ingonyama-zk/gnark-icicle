@@ -447,7 +447,12 @@ func (s *instance) solveConstraints() error {
 }
 
 func (s *instance) completeQk() error {
+	log := logger.Logger()
+	start := time.Now()
+
+	// fft
 	qk := s.pk.GetTrace().Qk.Clone().ToLagrange(&s.pk.Domain[0]).ToRegular()
+	log.Debug().Dur("took", time.Since(start)).Msg("FFT Qk")
 	qkCoeffs := qk.Coefficients()
 
 	wWitness, ok := s.fullWitness.Vector().(fr.Vector)
@@ -471,6 +476,7 @@ func (s *instance) completeQk() error {
 	s.x[id_Qk] = qk
 	close(s.chQk)
 
+	log.Debug().Dur("took", time.Since(start)).Msg("Complete Qk")
 	return nil
 }
 
