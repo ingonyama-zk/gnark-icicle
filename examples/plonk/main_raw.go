@@ -163,10 +163,17 @@ func main() {
 			log.Fatal(err)
 		}
 
+		const fpSize = 4 * 8
+		//var buf bytes.Buffer
+		//proof.WriteRawTo(&buf)
+		//proofBytes := buf.Bytes()
+		//fmt.Printf("proofBytes: %v\n", proofBytes)
+
 		err = plonk.Verify(proof, vk, witnessPublic)
 		if err == nil {
 			log.Fatal("Error: wrong proof is accepted")
 		}
+		fmt.Println(err)
 	}
 
 }
