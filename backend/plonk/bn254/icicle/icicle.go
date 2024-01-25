@@ -575,7 +575,7 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 
 	commit.Add(&commit, &blinding)
 
-	log.Debug().Dur("took", time.Since(start)).Msg("MSM (commitToPolyAndBlinding):")
+	log.Debug().Dur("took", time.Since(start)).Int("size", p.Size()).Msg("MSM (commitToPolyAndBlinding):")
 	return
 }
 
@@ -1381,12 +1381,11 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	start := time.Now()
 
 	G := new(errgroup.Group)
-
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[0], err = kzgDeviceCommit(h1, kzgPk.G1Device.G1)
 		//proof.H[0], err = kzg.Commit(h1, kzgPk.Kzg)
-		log.Debug().Dur("took", time.Since(start)).Msg("MSM (commitToQuotient):")
+		log.Debug().Dur("took", time.Since(start)).Int("size", len(h1)).Msg("MSM (commitToQuotient):")
 		return
 	})
 
@@ -1394,7 +1393,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 		start := time.Now()
 		proof.H[1], err = kzgDeviceCommit(h2, kzgPk.G1Device.G1)
 		//proof.H[1], err = kzg.Commit(h2, kzgPk.Kzg)
-		log.Debug().Dur("took", time.Since(start)).Msg("MSM (commitToQuotient):")
+		log.Debug().Dur("took", time.Since(start)).Int("size", len(h2)).Msg("MSM (commitToQuotient):")
 		return
 	})
 
@@ -1402,7 +1401,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 		start := time.Now()
 		proof.H[2], err = kzgDeviceCommit(h3, kzgPk.G1Device.G1)
 		//proof.H[2], err = kzg.Commit(h3, kzgPk.Kzg)
-		log.Debug().Dur("took", time.Since(start)).Msg("MSM (commitToQuotient):")
+		log.Debug().Dur("took", time.Since(start)).Int("size", len(h3)).Msg("MSM (commitToQuotient):")
 		return
 	})
 
