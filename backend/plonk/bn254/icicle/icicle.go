@@ -1381,9 +1381,16 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	log := logger.Logger()
 	start := time.Now()
 
+	// add padding to ensure input length is domain cardinality
+	padding := make([]fr.Element, len(kzgPk.Kzg.G1)-len(h1))
+	h1 = append(h1, padding...)
+	h2 = append(h2, padding...)
+	h3 = append(h3, padding...)
+
 	G := new(errgroup.Group)
 	G.Go(func() (err error) {
 		start := time.Now()
+		fmt.Print("h1 length: ", len(h1), "\n")
 		proof.H[0], err = kzgDeviceCommit(h1, kzgPk.G1Device.G1)
 		check, err := kzg.Commit(h1, kzgPk.Kzg)
 		if check != proof.H[0] {
