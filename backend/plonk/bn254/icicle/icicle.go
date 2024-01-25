@@ -144,11 +144,12 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	pk.DenDevice = <-copyDenDone
 
 	/*************************  G1 Device Setup ***************************/
-	log.Info().Msg("G1 Device Setup")
+	log.Info().Int("size", len(pk.Kzg.G1)).Msg("G1 Device Setup")
 	pointsBytesG1 := len(pk.Kzg.G1) * fp.Bytes * 2
 	copyG1Done := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyPointsToDevice(pk.Kzg.G1, pointsBytesG1, copyG1Done) // Make a function for points
 
+	log.Info().Int("size", len(pk.KzgLagrange.G1)).Msg("G1Lagrange Device Setup")
 	pointsBytesLagrangeG1 := len(pk.KzgLagrange.G1) * fp.Bytes * 2
 	copyLagrangeG1Done := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyPointsToDevice(pk.KzgLagrange.G1, pointsBytesLagrangeG1, copyLagrangeG1Done) // Make a function for points
@@ -956,7 +957,7 @@ func (s *instance) computeLinearizedPolynomial() error {
 	if err != nil {
 		return err
 	}
-	log.Debug().Dur("took", time.Since(timeCommit)).Msg("MSM (linearizedPolynomial):")
+	log.Debug().Dur("took", time.Since(timeCommit)).Int("size", len(s.linearizedPolynomial)).Msg("MSM (linearizedPolynomial):")
 	close(s.chLinearizedPolynomial)
 
 	return nil
@@ -1384,7 +1385,10 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[0], err = kzgDeviceCommit(h1, kzgPk.G1Device.G1)
-		//proof.H[0], err = kzg.Commit(h1, kzgPk.Kzg)
+		check, err := kzg.Commit(h1, kzgPk.Kzg)
+		if check != proof.H[0] {
+			fmt.Println("Commitment to H1 is not the same")
+		}
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h1)).Msg("MSM (commitToQuotient):")
 		return
 	})
@@ -1392,7 +1396,10 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[1], err = kzgDeviceCommit(h2, kzgPk.G1Device.G1)
-		//proof.H[1], err = kzg.Commit(h2, kzgPk.Kzg)
+		check, err := kzg.Commit(h2, kzgPk.Kzg)
+		if check != proof.H[1] {
+			fmt.Println("Commitment to H2 is not the same")
+		}
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h2)).Msg("MSM (commitToQuotient):")
 		return
 	})
@@ -1400,7 +1407,10 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[2], err = kzgDeviceCommit(h3, kzgPk.G1Device.G1)
-		//proof.H[2], err = kzg.Commit(h3, kzgPk.Kzg)
+		check, err := kzg.Commit(h3, kzgPk.Kzg)
+		if check != proof.H[2] {
+			fmt.Println("Commitment to H3 is not the same")
+		}
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h3)).Msg("MSM (commitToQuotient):")
 		return
 	})
