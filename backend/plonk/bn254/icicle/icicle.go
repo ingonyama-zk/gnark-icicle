@@ -557,10 +557,6 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	// Run kzg commit on device
 	go func() {
 		c, err := kzgDeviceCommit(p.Coefficients(), s.pk.G1Device.G1Lagrange)
-		commit, err := kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
-		if c != commit {
-			fmt.Println("Commitment mismatch")
-		}
 		if err != nil {
 			log.Error().Err(err).Msg("Error during Commit")
 		}
@@ -956,8 +952,7 @@ func (s *instance) computeLinearizedPolynomial() error {
 
 	var err error
 	timeCommit := time.Now()
-	//s.linearizedPolynomialDigest, err = kzgDeviceCommit(s.linearizedPolynomial, s.pk.G1Device.G1, runtime.NumCPU()*2)
-	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	s.linearizedPolynomialDigest, err = kzgDeviceCommit(s.linearizedPolynomial, s.pk.G1Device.G1, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
@@ -1389,10 +1384,6 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[0], err = kzgDeviceCommit(h1, kzgPk.G1Device.G1)
-		check, err := kzg.Commit(h1, kzgPk.Kzg)
-		if check != proof.H[0] {
-			fmt.Println("Commitment to H1 is not the same")
-		}
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h1)).Msg("MSM (commitToQuotient):")
 		return
 	})
@@ -1401,10 +1392,6 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[1], err = kzgDeviceCommit(h2, kzgPk.G1Device.G1)
-		check, err := kzg.Commit(h2, kzgPk.Kzg)
-		if check != proof.H[1] {
-			fmt.Println("Commitment to H2 is not the same")
-		}
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h2)).Msg("MSM (commitToQuotient):")
 		return
 	})
@@ -1413,10 +1400,6 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	G.Go(func() (err error) {
 		start := time.Now()
 		proof.H[2], err = kzgDeviceCommit(h3, kzgPk.G1Device.G1)
-		check, err := kzg.Commit(h3, kzgPk.Kzg)
-		if check != proof.H[2] {
-			fmt.Println("Commitment to H3 is not the same")
-		}
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h3)).Msg("MSM (commitToQuotient):")
 		return
 	})
