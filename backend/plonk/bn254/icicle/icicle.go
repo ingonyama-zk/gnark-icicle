@@ -144,13 +144,13 @@ func (pk *ProvingKey) setupDevicePointers() error {
 	pk.DenDevice = <-copyDenDone
 
 	/*************************  G1 Device Setup ***************************/
-	log.Info().Int("size", len(pk.Kzg.G1)).Msg("G1 Device Setup")
 	pointsBytesG1 := len(pk.Kzg.G1) * fp.Bytes * 2
+	log.Info().Int("size", len(pk.Kzg.G1)).Int("size bytes G1", pointsBytesG1).Msg("G1 Device Setup")
 	copyG1Done := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyPointsToDevice(pk.Kzg.G1, pointsBytesG1, copyG1Done) // Make a function for points
 
-	log.Info().Int("size", len(pk.KzgLagrange.G1)).Msg("G1Lagrange Device Setup")
 	pointsBytesLagrangeG1 := len(pk.KzgLagrange.G1) * fp.Bytes * 2
+	log.Info().Int("size", len(pk.KzgLagrange.G1)).Int("size bytes G1Lagrange", pointsBytesLagrangeG1).Msg("G1Lagrange Device Setup")
 	copyLagrangeG1Done := make(chan unsafe.Pointer, 1)
 	go iciclegnark.CopyPointsToDevice(pk.KzgLagrange.G1, pointsBytesLagrangeG1, copyLagrangeG1Done) // Make a function for points
 
@@ -558,7 +558,10 @@ func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G
 	// Run kzg commit on device
 	go func() {
 		c, err := kzgDeviceCommit(p.Coefficients(), s.pk.G1Device.G1Lagrange)
-		//c, err := kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+		commit, err := kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+		if c != commit {
+			fmt.Println("Commitment mismatch")
+		}
 		if err != nil {
 			log.Error().Err(err).Msg("Error during Commit")
 		}
@@ -827,7 +830,8 @@ func (s *instance) openZ() (err error) {
 	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
 	// open z at zeta
 	start := time.Now()
-	s.proof.ZShiftedOpening, err = Open(s.blindedZ, zetaShifted, s.pk)
+	//s.proof.ZShiftedOpening, err = Open(s.blindedZ, zetaShifted, s.pk)
+	s.proof.ZShiftedOpening, err = kzg.Open(s.blindedZ, zetaShifted, s.pk.Kzg)
 	if err != nil {
 		return err
 	}
@@ -1381,16 +1385,9 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 	log := logger.Logger()
 	start := time.Now()
 
-	// add padding to ensure input length is domain cardinality
-	padding := make([]fr.Element, len(kzgPk.Kzg.G1)-len(h1))
-	h1 = append(h1, padding...)
-	h2 = append(h2, padding...)
-	h3 = append(h3, padding...)
-
 	G := new(errgroup.Group)
 	G.Go(func() (err error) {
 		start := time.Now()
-		fmt.Print("h1 length: ", len(h1), "\n")
 		proof.H[0], err = kzgDeviceCommit(h1, kzgPk.G1Device.G1)
 		check, err := kzg.Commit(h1, kzgPk.Kzg)
 		if check != proof.H[0] {
@@ -1399,6 +1396,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h1)).Msg("MSM (commitToQuotient):")
 		return
 	})
+	G.Wait()
 
 	G.Go(func() (err error) {
 		start := time.Now()
@@ -1410,6 +1408,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk *
 		log.Debug().Dur("took", time.Since(start)).Int("size", len(h2)).Msg("MSM (commitToQuotient):")
 		return
 	})
+	G.Wait()
 
 	G.Go(func() (err error) {
 		start := time.Now()
