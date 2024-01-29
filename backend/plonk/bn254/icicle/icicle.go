@@ -34,7 +34,8 @@ import (
 	"github.com/consensys/gnark/internal/utils"
 
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
-	"github.com/ingonyama-zk/icicle/goicicle"
+	goicicle "github.com/ingonyama-zk/icicle/goicicle"
+	goicicle_bn254 "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 
 	"github.com/consensys/gnark/logger"
@@ -1169,44 +1170,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	m := uint64(s.pk.Domain[1].Cardinality)
 	mm := uint64(64 - bits.TrailingZeros64(m))
 
-	/////// TEST ///////
-
-	testPoly := s.x[2]
-	testSize := testPoly.Size()
-	sizeBytes := testPoly.Size() * fr.Bytes
-	copyADone := make(chan unsafe.Pointer, 1)
-	go iciclegnark.CopyToDevice(testPoly.Coefficients(), sizeBytes, copyADone)
-
-	a_device := <-copyADone
-
-	var wg sync.WaitGroup
-	computeInttNttOnDevice := func(devicePointer unsafe.Pointer) {
-		a_intt_d := iciclegnark.INttOnDevice(devicePointer, s.pk.DomainDevice.TwiddlesInv, nil, testSize, sizeBytes, false)
-
-		pointBytes := fp.Bytes * 3
-		outHost := make([]fr.Element, 1)
-		goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_intt_d, pointBytes)
-
-		poly := outHost[0]
-		fmt.Print("gpu poly", poly, "\n")
-
-		//iciclegnark.NttOnDevice(devicePointer, a_intt_d, s.pk.DomainDevice.Twiddles, s.pk.DomainDevice.CosetTable, testSize, testSize, sizeBytes, true)
-		iciclegnark.FreeDevicePointer(a_intt_d)
-		wg.Done()
-	}
-	wg.Add(1)
-	go computeInttNttOnDevice(a_device)
-	wg.Wait()
-
-	testPoly.ToCanonical(&s.pk.Domain[0], 1)
-	fmt.Print("cpu poly", testPoly.Coefficients()[0], "\n")
-
-	go iciclegnark.FreeDevicePointer(a_device)
-
-	/////// END TEST ///////
-
 	for i := 0; i < rho; i++ {
-
 		coset.Mul(&coset, &shifters[i])
 		tmp.Exp(coset, bn).Sub(&tmp, &one)
 
@@ -1228,22 +1192,71 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		batchTime := time.Now()
 		batchApply(s.x, func(p *iop.Polynomial) {
 			nbTasks := calculateNbTasks(len(s.x)-1) * 2
-			// shift polynomials to be in the correct coset
+			// INTT shift polynomials to be in the correct coset
 			p.ToCanonical(&s.pk.Domain[0], nbTasks)
 
+			// ON Device
+			n := p.Size()
+			sizeBytes := p.Size() * fr.Bytes
+
+			copyADone := make(chan unsafe.Pointer, 1)
+			go iciclegnark.CopyToDevice(p.Coefficients(), sizeBytes, copyADone)
+
+			a_device := <-copyADone
 			// scale by shifter[i]
 			w := selectScalingVector(i, p.Layout)
 
+			copySDone := make(chan unsafe.Pointer, 1)
+			go iciclegnark.CopyToDevice(w, sizeBytes, copySDone)
+
+			s_device := <-copySDone
+
+			// Initialize channels
+			computeInttNttDone := make(chan error, 1)
+			computeInttNttOnDevice := func(shifterPointer, devicePointer unsafe.Pointer) {
+				a_intt_d := iciclegnark.INttOnDevice(devicePointer, s.pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
+
+				goicicle_bn254.VecScalarMulMod(a_intt_d, shifterPointer, len(w))
+				iciclegnark.NttOnDevice(devicePointer, a_intt_d, s.pk.DomainDevice.Twiddles, s.pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
+
+				computeInttNttDone <- nil
+				iciclegnark.FreeDevicePointer(a_intt_d)
+			}
+			// Run computeInttNttOnDevice on device
+			go func() {
+				computeInttNttOnDevice(s_device, a_device)
+				computeInttNttDone <- nil
+			}()
+			_ = <-computeInttNttDone
+
+			// Copy result from device to host
+			outHost := make([]fr.Element, len(p.Coefficients()))
+			goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_device, sizeBytes)
+
+			// copy back to poly
+			cr := outHost
+			fmt.Print("GPU Coefficients", cr[0], "\n")
+
+			go func() {
+				iciclegnark.FreeDevicePointer(a_device)
+				iciclegnark.FreeDevicePointer(s_device)
+			}()
+
+			// Off Device
 			cp := p.Coefficients()
+			//parallelize the multiplication by the scaling vector
 			utils.Parallelize(len(cp), func(start, end int) {
 				for j := start; j < end; j++ {
 					cp[j].Mul(&cp[j], &w[j])
 				}
 			}, nbTasks)
 
-			// fft in the correct coset
+			// NTT in the correct coset
 			p.ToLagrange(&s.pk.Domain[0], nbTasks).ToRegular()
+			//fmt.Print("CPU Coefficients", p.Coefficients()[0], "\n")
+
 		})
+
 		log.Debug().Dur("took", time.Since(batchTime)).Msg("FFT (batchApply)")
 
 		wgBuf.Wait()
