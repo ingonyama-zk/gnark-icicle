@@ -34,6 +34,7 @@ import (
 	"github.com/consensys/gnark/internal/utils"
 
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
+	"github.com/ingonyama-zk/icicle/goicicle"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 
 	"github.com/consensys/gnark/logger"
@@ -1167,6 +1168,42 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	// of the result polynomial
 	m := uint64(s.pk.Domain[1].Cardinality)
 	mm := uint64(64 - bits.TrailingZeros64(m))
+
+	/////// TEST ///////
+
+	testPoly := s.x[2]
+	testSize := testPoly.Size()
+	sizeBytes := testPoly.Size() * fr.Bytes
+	copyADone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(testPoly.Coefficients(), sizeBytes, copyADone)
+
+	a_device := <-copyADone
+
+	var wg sync.WaitGroup
+	computeInttNttOnDevice := func(devicePointer unsafe.Pointer) {
+		a_intt_d := iciclegnark.INttOnDevice(devicePointer, s.pk.DomainDevice.TwiddlesInv, nil, testSize, sizeBytes, false)
+
+		pointBytes := fp.Bytes * 3
+		outHost := make([]fr.Element, 1)
+		goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_intt_d, pointBytes)
+
+		poly := outHost[0]
+		fmt.Print("gpu poly", poly, "\n")
+
+		//iciclegnark.NttOnDevice(devicePointer, a_intt_d, s.pk.DomainDevice.Twiddles, s.pk.DomainDevice.CosetTable, testSize, testSize, sizeBytes, true)
+		iciclegnark.FreeDevicePointer(a_intt_d)
+		wg.Done()
+	}
+	wg.Add(1)
+	go computeInttNttOnDevice(a_device)
+	wg.Wait()
+
+	testPoly.ToCanonical(&s.pk.Domain[0], 1)
+	fmt.Print("cpu poly", testPoly.Coefficients()[0], "\n")
+
+	go iciclegnark.FreeDevicePointer(a_device)
+
+	/////// END TEST ///////
 
 	for i := 0; i < rho; i++ {
 
