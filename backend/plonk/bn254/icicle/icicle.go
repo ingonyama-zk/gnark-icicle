@@ -34,7 +34,7 @@ import (
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/internal/utils"
 
-	goicicle "github.com/ingonyama-zk/icicle/goicicle"
+	"github.com/ingonyama-zk/icicle/goicicle"
 	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 
@@ -1195,65 +1195,43 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 			copyADone := make(chan unsafe.Pointer, 1)
 			go iciclegnark.CopyToDevice(p.Coefficients(), sizeBytes, copyADone)
-
 			a_device := <-copyADone
+
 			// scale by shifter[i]
 			w := selectScalingVector(i, p.Layout)
 
-			copySDone := make(chan unsafe.Pointer, 1)
-			go iciclegnark.CopyToDevice(w, sizeBytes, copySDone)
-
-			s_device := <-copySDone
+			copyWDone := make(chan unsafe.Pointer, 1)
+			go iciclegnark.CopyToDevice(w, sizeBytes, copyWDone)
+			w_device := <-copyWDone
 
 			// Initialize channels
 			computeInttNttDone := make(chan error, 1)
 			computeInttNttOnDevice := func(shifterPointer, devicePointer unsafe.Pointer) {
 				a_intt_d := iciclegnark.INttOnDevice(devicePointer, s.pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
 
-				icicle.VecScalarMulMod(a_intt_d, shifterPointer, len(w))
+				icicle.VecScalarMulMod(a_intt_d, shifterPointer, n)
 				iciclegnark.NttOnDevice(devicePointer, a_intt_d, s.pk.DomainDevice.Twiddles, s.pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
 
 				computeInttNttDone <- nil
 				iciclegnark.FreeDevicePointer(a_intt_d)
 			}
 			// Run computeInttNttOnDevice on device
-			go func() {
-				computeInttNttOnDevice(s_device, a_device)
-				computeInttNttDone <- nil
-			}()
+			go computeInttNttOnDevice(w_device, a_device)
 			_ = <-computeInttNttDone
 
 			// Copy result from device to host
 			outHost := make([]fr.Element, len(p.Coefficients()))
-			goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_device, sizeBytes)
+			memCpy := make(chan int, 1)
+			res := goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_device, sizeBytes)
+			memCpy <- res
 
-			// copy back to poly
-			//cr := outHost
-			//fmt.Print("GPU Coefficients", cr[0], "\n")
+			p_new := iop.NewPolynomial(&outHost, p.Form)
+			fmt.Print(p_new.Coefficients()[0], "\n")
 
 			go func() {
 				iciclegnark.FreeDevicePointer(a_device)
-				iciclegnark.FreeDevicePointer(s_device)
+				iciclegnark.FreeDevicePointer(w_device)
 			}()
-
-			///////// Off Device ///////////
-			nbTasks := calculateNbTasks(len(s.x)-1) * 2
-
-			// INTT shift polynomials to be in the correct coset
-			p.ToCanonical(&s.pk.Domain[0], nbTasks)
-
-			cp := p.Coefficients()
-
-			//parallelize the multiplication by the scaling vector
-			utils.Parallelize(len(cp), func(start, end int) {
-				for j := start; j < end; j++ {
-					cp[j].Mul(&cp[j], &w[j])
-				}
-			}, nbTasks)
-
-			// NTT in the correct coset
-			p.ToLagrange(&s.pk.Domain[0], nbTasks).ToRegular()
-			//fmt.Print("CPU Coefficients", p.Coefficients()[0], "\n")
 		})
 
 		log.Debug().Dur("took", time.Since(batchTime)).Msg("FFT (batchApply)")
