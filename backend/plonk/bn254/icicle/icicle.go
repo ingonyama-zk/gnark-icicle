@@ -1168,6 +1168,55 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	m := uint64(s.pk.Domain[1].Cardinality)
 	mm := uint64(64 - bits.TrailingZeros64(m))
 
+	// TEST //
+
+	p := s.x[0]
+
+	// ON Device
+	sizeN := len(p.Coefficients())
+	sizeBytes := sizeN * fr.Bytes
+
+	copyADone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(p.Coefficients(), sizeBytes, copyADone)
+	a_device := <-copyADone
+
+	// Initialize channels
+	computeInttNttDone := make(chan error, 1)
+	computeInttNttOnDevice := func(devicePointer unsafe.Pointer) {
+		a_intt_d := iciclegnark.INttOnDevice(devicePointer, s.pk.DomainDevice.TwiddlesInv, nil, sizeN, sizeBytes, false)
+		iciclegnark.NttOnDevice(devicePointer, a_intt_d, s.pk.DomainDevice.Twiddles, s.pk.DomainDevice.CosetTable, sizeN, sizeN, sizeBytes, true)
+
+		// Copy result from device to host
+		outHost := make([]fr.Element, sizeN)
+		goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_intt_d, sizeBytes)
+
+		// copy back to poly
+		cr := outHost
+		fmt.Print("GPU INTT Coefficients", cr[0], "\n")
+
+		computeInttNttDone <- nil
+		iciclegnark.FreeDevicePointer(a_intt_d)
+	}
+	go computeInttNttOnDevice(a_device)
+	_ = <-computeInttNttDone
+
+	// Copy result from device to host
+	outHost := make([]fr.Element, sizeN)
+	goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_device, sizeBytes)
+
+	// copy back to poly
+	cr := outHost
+	p.ToCanonical(&s.pk.Domain[0], 1)
+	fmt.Print("CPU INTT Coefficients", p.Coefficients()[0], "\n")
+
+	// NTT in the correct coset
+	p.ToLagrange(&s.pk.Domain[0], 1).ToRegular()
+
+	fmt.Print("GPU Lagrange Coefficients", cr[0], "\n")
+	fmt.Print("CPU Lagrange Coefficients", p.Coefficients()[0], "\n")
+
+	go iciclegnark.FreeDevicePointer(a_device)
+
 	for i := 0; i < rho; i++ {
 		coset.Mul(&coset, &shifters[i])
 		tmp.Exp(coset, bn).Sub(&tmp, &one)
@@ -1189,20 +1238,35 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		// at the cost of a huge memory footprint.
 		batchTime := time.Now()
 		batchApply(s.x, func(p *iop.Polynomial) {
+			nbTasks := calculateNbTasks(len(s.x)-1) * 2
+			// INTT shift polynomials to be in the correct coset
+			p.ToCanonical(&s.pk.Domain[0], nbTasks)
+
+			// scale by shifter[i]
+			w := selectScalingVector(i, p.Layout)
+
+			cp := p.Coefficients()
+
+			//parallelize the multiplication by the scaling vector
+			utils.Parallelize(len(cp), func(start, end int) {
+				for j := start; j < end; j++ {
+					cp[j].Mul(&cp[j], &w[j])
+				}
+			}, nbTasks)
+
+			// NTT in the correct coset
+			p.ToLagrange(&s.pk.Domain[0], nbTasks).ToRegular()
+
 			// ON Device
 			n := p.Size()
 			sizeBytes := p.Size() * fr.Bytes
 
 			copyADone := make(chan unsafe.Pointer, 1)
 			go iciclegnark.CopyToDevice(p.Coefficients(), sizeBytes, copyADone)
-
 			a_device := <-copyADone
-			// scale by shifter[i]
-			w := selectScalingVector(i, p.Layout)
 
 			copySDone := make(chan unsafe.Pointer, 1)
 			go iciclegnark.CopyToDevice(w, sizeBytes, copySDone)
-
 			s_device := <-copySDone
 
 			// Initialize channels
@@ -1235,25 +1299,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 				iciclegnark.FreeDevicePointer(a_device)
 				iciclegnark.FreeDevicePointer(s_device)
 			}()
-
-			///////// Off Device ///////////
-			nbTasks := calculateNbTasks(len(s.x)-1) * 2
-
-			// INTT shift polynomials to be in the correct coset
-			p.ToCanonical(&s.pk.Domain[0], nbTasks)
-
-			cp := p.Coefficients()
-
-			//parallelize the multiplication by the scaling vector
-			utils.Parallelize(len(cp), func(start, end int) {
-				for j := start; j < end; j++ {
-					cp[j].Mul(&cp[j], &w[j])
-				}
-			}, nbTasks)
-
-			// NTT in the correct coset
-			p.ToLagrange(&s.pk.Domain[0], nbTasks).ToRegular()
-			//fmt.Print("CPU Coefficients", p.Coefficients()[0], "\n")
 		})
 
 		log.Debug().Dur("took", time.Since(batchTime)).Msg("FFT (batchApply)")
