@@ -25,6 +25,7 @@ import (
 	fiatshamir "github.com/consensys/gnark-crypto/fiat-shamir"
 
 	"github.com/consensys/gnark/backend"
+	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 	"github.com/consensys/gnark/backend/witness"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/hash_to_field"
@@ -33,9 +34,8 @@ import (
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/internal/utils"
 
-	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 	goicicle "github.com/ingonyama-zk/icicle/goicicle"
-	goicicle_bn254 "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
+	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 
 	"github.com/consensys/gnark/logger"
@@ -1115,7 +1115,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	buf := make([]fr.Element, n)
 	var wgBuf sync.WaitGroup
 
-	evalTime := time.Now()
 	allConstraints := func(i int, u ...fr.Element) fr.Element {
 		// scale S1, S2, S3 by β
 		u[id_S1].Mul(&u[id_S1], &s.beta)
@@ -1144,7 +1143,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		c.Mul(&c, &s.alpha).Add(&c, &b).Mul(&c, &s.alpha).Add(&c, &a)
 		return c
 	}
-	log.Debug().Dur("took", time.Since(evalTime)).Msg("FFT (allConstraints):")
 
 	// select the correct scaling vector to scale by shifter[i]
 	selectScalingVector := func(i int, l iop.Layout) []fr.Element {
@@ -1191,10 +1189,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		// at the cost of a huge memory footprint.
 		batchTime := time.Now()
 		batchApply(s.x, func(p *iop.Polynomial) {
-			nbTasks := calculateNbTasks(len(s.x)-1) * 2
-			// INTT shift polynomials to be in the correct coset
-			p.ToCanonical(&s.pk.Domain[0], nbTasks)
-
 			// ON Device
 			n := p.Size()
 			sizeBytes := p.Size() * fr.Bytes
@@ -1216,7 +1210,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			computeInttNttOnDevice := func(shifterPointer, devicePointer unsafe.Pointer) {
 				a_intt_d := iciclegnark.INttOnDevice(devicePointer, s.pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
 
-				goicicle_bn254.VecScalarMulMod(a_intt_d, shifterPointer, len(w))
+				icicle.VecScalarMulMod(a_intt_d, shifterPointer, len(w))
 				iciclegnark.NttOnDevice(devicePointer, a_intt_d, s.pk.DomainDevice.Twiddles, s.pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
 
 				computeInttNttDone <- nil
@@ -1234,16 +1228,22 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_device, sizeBytes)
 
 			// copy back to poly
-			cr := outHost
-			fmt.Print("GPU Coefficients", cr[0], "\n")
+			//cr := outHost
+			//fmt.Print("GPU Coefficients", cr[0], "\n")
 
 			go func() {
 				iciclegnark.FreeDevicePointer(a_device)
 				iciclegnark.FreeDevicePointer(s_device)
 			}()
 
-			// Off Device
+			///////// Off Device ///////////
+			nbTasks := calculateNbTasks(len(s.x)-1) * 2
+
+			// INTT shift polynomials to be in the correct coset
+			p.ToCanonical(&s.pk.Domain[0], nbTasks)
+
 			cp := p.Coefficients()
+
 			//parallelize the multiplication by the scaling vector
 			utils.Parallelize(len(cp), func(start, end int) {
 				for j := start; j < end; j++ {
@@ -1254,7 +1254,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			// NTT in the correct coset
 			p.ToLagrange(&s.pk.Domain[0], nbTasks).ToRegular()
 			//fmt.Print("CPU Coefficients", p.Coefficients()[0], "\n")
-
 		})
 
 		log.Debug().Dur("took", time.Since(batchTime)).Msg("FFT (batchApply)")
