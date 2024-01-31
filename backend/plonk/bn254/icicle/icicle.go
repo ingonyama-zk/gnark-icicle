@@ -1217,11 +1217,9 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			go computeInttNttOnDevice(w_device, a_device)
 			_ = <-computeInttNttDone
 
-			// TODO fix Copy result from device to host
 			res := iciclegnark.CopyScalarsToHost(a_device, n, sizeBytes)
 
-			p_new := iop.NewPolynomial(&res, p.Form)
-			s.x[i] = p_new
+			s.x[i] = iop.NewPolynomial(&res, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
 			//fmt.Print(p_new.Coefficients()[0], "\n")
 
 			go func() {
@@ -1284,9 +1282,22 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			go iciclegnark.CopyToDevice(p.Coefficients(), sizeBytes, copyADone)
 			a_device := <-copyADone
 
+			// HACK do a better way
+			var acc fr.Element
+			acc.SetOne()
+			accList := make([]fr.Element, p.Size())
+			for j := 0; j < p.Size(); j++ {
+				accList[j] = acc
+			}
+
+			copyPDone := make(chan unsafe.Pointer, 1)
+			go iciclegnark.CopyToDevice(accList, sizeBytes, copyPDone)
+			p_device := <-copyPDone
+
 			ch1 := make(chan []fr.Element, n)
 			go func() {
 				a_intt_d := iciclegnark.INttOnDevice(a_device, s.pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
+				iciclegnark.VecMulOnDevice(a_intt_d, p_device, n)
 				ret := iciclegnark.CopyScalarsToHost(a_intt_d, n, sizeBytes)
 				ch1 <- ret
 			}()
@@ -1296,8 +1307,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 			p_new := iop.NewPolynomial(&intt, form)
 
-			// TODO does this work with Icicle?
-			scalePowers(p_new, cs)
 			s.x[i] = p_new
 		})
 
