@@ -34,8 +34,6 @@ import (
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/internal/utils"
 
-	"github.com/ingonyama-zk/icicle/goicicle"
-	icicle "github.com/ingonyama-zk/icicle/goicicle/curves/bn254"
 	iciclegnark "github.com/ingonyama-zk/iciclegnark/curves/bn254"
 
 	"github.com/consensys/gnark/logger"
@@ -1188,7 +1186,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		// we could pre-compute theses rho*2 FFTs and store them
 		// at the cost of a huge memory footprint.
 		batchTime := time.Now()
-		batchApply(s.x, func(p *iop.Polynomial) {
+		batchApply(s.x, func(p *iop.Polynomial, i int) {
 			// ON Device
 			n := p.Size()
 			sizeBytes := p.Size() * fr.Bytes
@@ -1209,7 +1207,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			computeInttNttOnDevice := func(shifterPointer, devicePointer unsafe.Pointer) {
 				a_intt_d := iciclegnark.INttOnDevice(devicePointer, s.pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
 
-				icicle.VecScalarMulMod(a_intt_d, shifterPointer, n)
+				iciclegnark.VecMulOnDevice(a_intt_d, shifterPointer, n)
 				iciclegnark.NttOnDevice(devicePointer, a_intt_d, s.pk.DomainDevice.Twiddles, s.pk.DomainDevice.CosetTable, n, n, sizeBytes, true)
 
 				computeInttNttDone <- nil
@@ -1219,14 +1217,12 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			go computeInttNttOnDevice(w_device, a_device)
 			_ = <-computeInttNttDone
 
-			// Copy result from device to host
-			outHost := make([]fr.Element, len(p.Coefficients()))
-			memCpy := make(chan int, 1)
-			res := goicicle.CudaMemCpyDtoH[fr.Element](outHost, a_device, sizeBytes)
-			memCpy <- res
+			// TODO fix Copy result from device to host
+			res := iciclegnark.CopyScalarsToHost(a_device, n, sizeBytes)
 
-			p_new := iop.NewPolynomial(&outHost, p.Form)
-			fmt.Print(p_new.Coefficients()[0], "\n")
+			p_new := iop.NewPolynomial(&res, p.Form)
+			s.x[i] = p_new
+			//fmt.Print(p_new.Coefficients()[0], "\n")
 
 			go func() {
 				iciclegnark.FreeDevicePointer(a_device)
@@ -1278,9 +1274,31 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		}
 		cs.Inverse(&cs)
 
-		batchApply(s.x[:id_ZS], func(p *iop.Polynomial) {
-			p.ToCanonical(&s.pk.Domain[0], 8).ToRegular()
-			scalePowers(p, cs)
+		batchApply(s.x[:id_ZS], func(p *iop.Polynomial, i int) {
+			//p.ToCanonical(&s.pk.Domain[0], 8).ToRegular()
+
+			n := p.Size()
+			sizeBytes := p.Size() * fr.Bytes
+
+			copyADone := make(chan unsafe.Pointer, 1)
+			go iciclegnark.CopyToDevice(p.Coefficients(), sizeBytes, copyADone)
+			a_device := <-copyADone
+
+			ch1 := make(chan []fr.Element, n)
+			go func() {
+				a_intt_d := iciclegnark.INttOnDevice(a_device, s.pk.DomainDevice.TwiddlesInv, nil, n, sizeBytes, false)
+				ret := iciclegnark.CopyScalarsToHost(a_intt_d, n, sizeBytes)
+				ch1 <- ret
+			}()
+			intt := <-ch1
+
+			form := iop.Form{Basis: iop.Canonical, Layout: iop.Regular}
+
+			p_new := iop.NewPolynomial(&intt, form)
+
+			// TODO does this work with Icicle?
+			scalePowers(p_new, cs)
+			s.x[i] = p_new
 		})
 
 		for _, q := range s.bp {
@@ -1311,7 +1329,7 @@ func calculateNbTasks(n int) int {
 }
 
 // batchApply executes fn on all polynomials in x except x[id_ZS] in parallel.
-func batchApply(x []*iop.Polynomial, fn func(*iop.Polynomial)) {
+func batchApply(x []*iop.Polynomial, fn func(*iop.Polynomial, int)) {
 	var wg sync.WaitGroup
 	for i := 0; i < len(x); i++ {
 		if i == id_ZS {
@@ -1319,7 +1337,7 @@ func batchApply(x []*iop.Polynomial, fn func(*iop.Polynomial)) {
 		}
 		wg.Add(1)
 		go func(i int) {
-			fn(x[i])
+			fn(x[i], i)
 			wg.Done()
 		}(i)
 	}
