@@ -1329,6 +1329,7 @@ func batchApply(x []*iop.Polynomial, fn func(*iop.Polynomial, int)) {
 			wg.Done()
 			}(i)
 		}
+	wg.Wait()
 }
 
 // p <- <p, (1, w, .., wⁿ) >
