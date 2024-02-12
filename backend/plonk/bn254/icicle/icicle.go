@@ -1313,12 +1313,21 @@ func calculateNbTasks(n int) int {
 
 // batchApply executes fn on all polynomials in x except x[id_ZS] in parallel.
 func batchApply(x []*iop.Polynomial, fn func(*iop.Polynomial, int)) {
-	//var wg sync.WaitGroup
+	var wg sync.WaitGroup
 	for i := 0; i < len(x); i++ {
 		if i == id_ZS {
 			continue
 		}
+		wg.Add(1)
+		go func(i int) {
+			// lock thread to prevent weird cuda errors
+			runtime.LockOSThread()
+
 			fn(x[i], i)
+
+			runtime.UnlockOSThread()
+			wg.Done()
+			}(i)
 		}
 }
 
