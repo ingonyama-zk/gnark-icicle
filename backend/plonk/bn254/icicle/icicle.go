@@ -960,6 +960,220 @@ func (s *instance) batchOpening() error {
 	return err
 }
 
+// Compute the numerator of the quotient polynomial on Device 
+func (s *instance) computeNumeratorOnDevice(x []unsafe.Pointer) (*iop.Polynomial, error) {
+	n := int(s.pk.Domain[0].Cardinality)
+
+	nbBsbGates := (len(s.x) - id_Qci + 1) >> 1
+
+	sizeBytes := n * fr.Bytes
+
+	sizeBytesBlinding := len(s.bp[0].Coefficients()) * fr.Bytes
+
+	//  order_blinding_Z = 2 so different size than other blinding facotrs
+	nbZ := s.bp[id_Bz].Size()
+	sizeBytesBlindingZ := len(s.bp[id_Bz].Coefficients()) * fr.Bytes
+
+	// Copy the twiddles slice to the device
+	copyTDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(s.twiddles0, sizeBytes, copyTDone)
+	twiddlesPtr := <-copyTDone
+
+	twiddles0Shifted := make([]fr.Element, len(s.twiddles0))
+	for i := 0; i < len(s.twiddles0); i++ {
+		twiddles0Shifted[i].Set(&s.twiddles0[(i+1)%n])
+	}
+
+	copyTSDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(twiddles0Shifted, sizeBytes, copyTSDone)
+	twiddlesSPtrShifted := <-copyTSDone
+
+	// Copy Alpha, Beta, Gamma to the device
+	alphaList := make([]fr.Element, s.x[0].Size())
+	for j := 0; j < s.x[0].Size(); j++ {
+		alphaList[j].Set(&s.alpha)
+	}
+
+	copyADone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(alphaList, sizeBytes, copyADone)
+	alphaPtr := <-copyADone
+
+	betaList := make([]fr.Element, s.x[0].Size())
+	for j := 0; j < s.x[0].Size(); j++ {
+		betaList[j].Set(&s.beta)
+	}
+
+	copyBDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(betaList, sizeBytes, copyBDone)
+	betaPtr := <-copyBDone
+
+	gammaList := make([]fr.Element, s.x[0].Size())
+	for j := 0; j < s.x[0].Size(); j++ {
+		gammaList[j].Set(&s.gamma)
+	}
+
+	copyGDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(gammaList, sizeBytes, copyGDone)
+	gammaPtr := <-copyGDone
+
+	var cs, css fr.Element
+	cs.Set(&s.pk.Domain[1].FrMultiplicativeGen)
+	css.Square(&cs)
+
+	csList := make([]fr.Element, s.x[0].Size())
+	for j := 0; j < s.x[0].Size(); j++ {
+		csList[j].Set(&cs)
+	}
+
+	copyCSDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(csList, sizeBytes, copyCSDone)
+	csPtr := <-copyCSDone
+
+	cssList := make([]fr.Element, s.x[0].Size())
+	for j := 0; j < s.x[0].Size(); j++ {
+		cssList[j].Set(&css)
+	}
+
+	copyCSSDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(cssList, sizeBytes, copyCSSDone)
+	cssPtr := <-copyCSSDone
+
+	// Initialize res to one and then copy resList to device
+	var res fr.Element
+	res.SetOne()
+
+	resList := make([]fr.Element, s.x[0].Size())
+	for j := 0; j < s.x[0].Size(); j++ {
+		resList[j].Set(&res)
+	}
+
+	copyRSDone := make(chan unsafe.Pointer, 1)
+	go iciclegnark.CopyToDevice(resList, sizeBytes, copyRSDone)
+	resPtr := <-copyRSDone
+
+	// Set up blinding pointers to polynomial coefficients
+	var blindingPointers []unsafe.Pointer
+	for i := 0; i < len(s.bp); i++ {
+		sizeBytes := s.bp[i].Size() * fr.Bytes
+
+		copyADone := make(chan unsafe.Pointer, 1)
+		go iciclegnark.CopyToDevice(s.bp[i].Coefficients(), sizeBytes, copyADone)
+		a_device := <-copyADone
+
+		blindingPointers = append(blindingPointers, a_device)
+	}
+
+	gateConstraint := func() unsafe.Pointer {
+		icPtr := iciclegnark.VecMulOnDeviceOut(x[id_Ql], x[id_L], n)
+		tmpPtr := iciclegnark.VecMulOnDeviceOut(x[id_Qr], x[id_R], n)
+		iciclegnark.VecAddOnDevice(icPtr, tmpPtr, n)
+
+		tmpPtr = iciclegnark.VecMulOnDeviceOut(x[id_Qm], x[id_L], n)
+		iciclegnark.VecMulOnDevice(tmpPtr, x[id_R], n)
+
+		iciclegnark.VecAddOnDevice(icPtr, tmpPtr, n)
+
+		tmpPtr = iciclegnark.VecMulOnDeviceOut(x[id_Qo], x[id_O], n)
+
+		iciclegnark.VecAddOnDevice(icPtr, tmpPtr, n)
+		iciclegnark.VecAddOnDevice(icPtr, x[id_Qk], n)
+		for i := 0; i < nbBsbGates; i++ {
+			tmpPtr = iciclegnark.VecMulOnDeviceOut(x[id_Qci+2*i], x[id_Qci+2*i+1], n)
+			iciclegnark.VecAddOnDevice(icPtr, tmpPtr, n)
+		}
+
+		return icPtr
+	}
+
+	orderingConstraint := func() unsafe.Pointer {
+		a := iciclegnark.VecAddOnDeviceOut(gammaPtr, x[id_L], n)
+		iciclegnark.VecAddOnDevice(a, x[id_ID], n)
+
+		b := iciclegnark.VecMulOnDeviceOut(x[id_ID], csPtr, n)
+		iciclegnark.VecAddOnDevice(b, x[id_R], n)
+		iciclegnark.VecAddOnDevice(b, gammaPtr, n)
+
+		c := iciclegnark.VecMulOnDeviceOut(x[id_ID], cssPtr, n)
+		iciclegnark.VecAddOnDevice(c, x[id_O], n)
+		iciclegnark.VecAddOnDevice(c, gammaPtr, n)
+
+		r := iciclegnark.VecMulOnDeviceOut(a, b, n)
+		iciclegnark.VecMulOnDevice(r, c, n)
+		iciclegnark.VecMulOnDevice(r, x[id_Z], n)
+
+		a = iciclegnark.VecAddOnDeviceOut(x[id_S1], x[id_L], n)
+		iciclegnark.VecAddOnDevice(a, gammaPtr, n)
+
+		b = iciclegnark.VecAddOnDeviceOut(x[id_S2], x[id_R], n)
+		iciclegnark.VecAddOnDevice(b, gammaPtr, n)
+
+		c = iciclegnark.VecAddOnDeviceOut(x[id_S3], x[id_O], n)
+		iciclegnark.VecAddOnDevice(c, gammaPtr, n)
+
+		l := iciclegnark.VecMulOnDeviceOut(a, b, n)
+		iciclegnark.VecMulOnDevice(l, c, n)
+		iciclegnark.VecMulOnDevice(l, x[id_ZS], n)
+
+		//iciclegnark.MontConvOnDevice(l, n, true)
+		//resIC := iciclegnark.CopyScalarsToHost(l, n, sizeBytes)
+
+		//fmt.Println("resIC: ", resIC[0])
+
+		iciclegnark.VecSubOnDevice(l, r, n)
+
+		return a
+	}
+
+	ratioLocalConstraint := func() unsafe.Pointer {
+		iciclegnark.VecSubOnDevice(x[id_Z], resPtr, n)
+		iciclegnark.VecMulOnDevice(resPtr, x[id_LOne], n)
+
+		return resPtr
+	}
+
+	// scale S1, S2, S3 by β
+	iciclegnark.VecMulOnDevice(x[id_S1], betaPtr, n)
+	iciclegnark.VecMulOnDevice(x[id_S2], betaPtr, n)
+	iciclegnark.VecMulOnDevice(x[id_S3], betaPtr, n)
+
+	// blind L, R, O, Z, ZS
+	iciclegnark.EvaluateOnDevice(blindingPointers[id_Bl], blindingPointers[id_Bl], twiddlesPtr, nil, n, n, sizeBytesBlinding, false)
+	iciclegnark.VecAddOnDevice(x[id_L], blindingPointers[id_Bl], n)
+
+	iciclegnark.EvaluateOnDevice(blindingPointers[id_Br], blindingPointers[id_Br], twiddlesPtr, nil, n, n, sizeBytesBlinding, false)
+	iciclegnark.VecAddOnDevice(x[id_R], blindingPointers[id_Br], n)
+
+	iciclegnark.EvaluateOnDevice(blindingPointers[id_Bo], blindingPointers[id_Bo], twiddlesPtr, nil, n, n, sizeBytesBlinding, false)
+	iciclegnark.VecAddOnDevice(x[id_O], blindingPointers[id_Bo], n)
+
+	iciclegnark.EvaluateOnDevice(blindingPointers[id_Bz], blindingPointers[id_Bz], twiddlesPtr, nil, nbZ, n, sizeBytesBlindingZ, false)
+	iciclegnark.VecAddOnDevice(x[id_Z], blindingPointers[id_Bz], n)
+
+	// Use the twiddles for the shifted domain here
+	iciclegnark.EvaluateOnDevice(blindingPointers[id_Bz], blindingPointers[id_Bz], twiddlesSPtrShifted, nil, nbZ, n, sizeBytesBlindingZ, false)
+	iciclegnark.VecAddOnDevice(x[id_ZS], blindingPointers[id_Bz], n)
+
+	// Evaluate the gate constraint
+	a := gateConstraint()
+	b := orderingConstraint()
+	c := ratioLocalConstraint()
+
+	// Evaluate the numerator polynomial
+	iciclegnark.VecMulOnDevice(c, alphaPtr, n)
+	iciclegnark.VecAddOnDevice(c, b, n)
+	iciclegnark.VecMulOnDevice(c, alphaPtr, n)
+	iciclegnark.VecAddOnDevice(c, a, n)
+
+	// Convert back to device form
+	iciclegnark.MontConvOnDevice(c, n, true)
+	cres := iciclegnark.CopyScalarsToHost(c, n, sizeBytes)
+
+	// Build the polynomial from the result
+	num := iop.NewPolynomial(&cres, iop.Form{Basis: iop.LagrangeCoset, Layout: iop.BitReverse})
+	return num, nil
+}
+
+
 // evaluate the full set of constraints, all polynomials in x are back in
 // canonical regular form at the end
 func (s *instance) computeNumerator() (*iop.Polynomial, error) {
@@ -1052,7 +1266,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	cres := s.cres
 	buf := make([]fr.Element, n)
 	var wgBuf sync.WaitGroup
-	
+
 	allConstraints := func(i int, u ...fr.Element) fr.Element {
 		// scale S1, S2, S3 by β
 		u[id_S1].Mul(&u[id_S1], &s.beta)
@@ -1077,6 +1291,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		a := gateConstraint(u...)
 		b := orderingConstraint(u...)
 		c := ratioLocalConstraint(u...)
+
 		c.Mul(&c, &s.alpha).Add(&c, &b).Mul(&c, &s.alpha).Add(&c, &a)
 		return c
 	}
@@ -1137,7 +1352,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			nbTasks := calculateNbTasks(len(s.x)-1) * 2
 
 			n := p.Size()
-			sizeBytes := p.Size() * fr.Bytes
+			sizeBytes := n * fr.Bytes
 
 			// scale by shifter[i]
 			w_device := selectScalingVector(i, p.Layout)
@@ -1201,8 +1416,11 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 		})
 		log.Debug().Dur("took", time.Since(batchTime)).Msg("FFT (batchApply)")
-		 
+
 		wgBuf.Wait()
+
+		s.computeNumeratorOnDevice(devicePointers)
+
 		if _, err := iop.Evaluate(
 			allConstraints,
 			buf,
