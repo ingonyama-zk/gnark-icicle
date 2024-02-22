@@ -19,6 +19,7 @@ import (
 	"log"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/plonk"
 	cs "github.com/consensys/gnark/constraint/bn254"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -117,7 +118,7 @@ func main() {
 			log.Fatal(err)
 		}
 
-		proof, err := plonk.Prove(ccs, pk, witnessFull)
+		proof, err := plonk.Prove(ccs, pk, witnessFull, backend.WithIcicleAcceleration())
 		if err != nil {
 			log.Fatal(err)
 		}

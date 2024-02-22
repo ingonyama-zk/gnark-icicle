@@ -1,6 +1,6 @@
 module github.com/consensys/gnark
 
-go 1.20
+go 1.21.6
 
 require (
 	github.com/bits-and-blooms/bitset v1.8.0
@@ -28,9 +28,11 @@ require (
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/rogpeppe/go-internal v1.11.0 // indirect
+	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/sys v0.15.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
+
+replace github.com/ingonyama-zk/icicle => ../tmp/icicle
