@@ -22,6 +22,8 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/fft"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/hash_to_field"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/iop"
+
+	//icicle_bn254 "github.com/consensys/gnark/backend/groth16.bak/bn254/icicle"
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
@@ -36,8 +38,9 @@ import (
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/logger"
 
-	bn254_icicle "github.com/ingonyama-zk/icicle/wrappers/golang/curves/bn254"
 	icicle_core "github.com/ingonyama-zk/icicle/wrappers/golang/core"
+	cr "github.com/ingonyama-zk/icicle/wrappers/golang/cuda_runtime"
+	icicle_bn254 "github.com/ingonyama-zk/icicle/wrappers/golang/curves/bn254"
 )
 
 const HasIcicle = true
@@ -83,7 +86,7 @@ func Prove(spr *cs.SparseR1CS, pk *plonk_bn254.ProvingKey, fullWitness witness.W
 		Str("curve", spr.CurveID().String()).
 		Int("nbConstraints", spr.GetNbConstraints()).
 		Str("backend", "plonk").Logger()
-	
+
 	// parse the options
 	opt, err := backend.NewProverConfig(opts...)
 	if err != nil {
@@ -230,9 +233,6 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *plonk_bn254.Provin
 	// build trace
 	s.trace = plonk_bn254.NewTrace(spr, s.domain0)
 
-	t := s.domain1.CosetTable()
-	core.HostSliceFromElements[T github.com/ingonyama-zk/icicle/wrappers/golang/core.HostSliceInterface](elements []T)[fr.Element](t, n)
-
 	return &s, nil
 }
 
@@ -241,6 +241,9 @@ func (s *instance) initBlindingPolynomials() error {
 	s.bp[id_Br] = getRandomPolynomial(order_blinding_R)
 	s.bp[id_Bo] = getRandomPolynomial(order_blinding_O)
 	s.bp[id_Bz] = getRandomPolynomial(order_blinding_Z)
+
+	icicle_core.HostSliceWithValue[*iop.Polynomial](s.bp[id_Bl], s.bp[id_Bl].Size())
+
 	close(s.chbp)
 	return nil
 }
@@ -433,11 +436,30 @@ func (s *instance) deriveGammaAndBeta() error {
 // and add the contribution of a blinding polynomial b (small degree)
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
+	cfg := icicle_bn254.GetDefaultMSMConfig()
+
+	n := int(s.domain0.Cardinality)
+	scalars := icicle_bn254.GenerateScalars(n)
+	points := icicle_bn254.GenerateAffinePoints(n)
+
+	var out icicle_core.DeviceSlice
+	stream, _ := cr.CreateStream()
+	_, e := out.MallocAsync(p.Size(), p.Size(), stream)
+	icicle_bn254.Msm(scalars, points, &cfg, out)
+	e = icicle_bn254.Msm(scalars, points, &cfg, out)
+	if e != 0 {
+		fmt.Println("error", e)
+	}
+
+	outHost := make(icicle_core.HostSlice[icicle_bn254.Projective], 1)
+	outHost.CopyFromDevice(&out)
+	out.Free()
+
+	fmt.Println("outHost", outHost)
 
 	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
 
 	// we add in the blinding contribution
-	n := int(s.domain0.Cardinality)
 	cb := commitBlindingFactor(n, b, s.pk.Kzg)
 	commit.Add(&commit, &cb)
 
