@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"math"
 	"math/big"
 	"math/bits"
 	"runtime"
@@ -24,6 +25,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/iop"
 
 	//icicle_bn254 "github.com/consensys/gnark/backend/groth16.bak/bn254/icicle"
+
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
@@ -38,8 +40,9 @@ import (
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/logger"
 
+	"github.com/ingonyama-zk/icicle/wrappers/golang/core"
 	icicle_core "github.com/ingonyama-zk/icicle/wrappers/golang/core"
-	cr "github.com/ingonyama-zk/icicle/wrappers/golang/cuda_runtime"
+	"github.com/ingonyama-zk/icicle/wrappers/golang/curves/bn254"
 	icicle_bn254 "github.com/ingonyama-zk/icicle/wrappers/golang/curves/bn254"
 )
 
@@ -183,6 +186,13 @@ type instance struct {
 	domain0, domain1 *fft.Domain
 
 	trace *plonk_bn254.Trace
+
+	// gpu stuff
+	nttCfg icicle_core.NTTConfig[[8]uint32]
+	msmCfg icicle_core.MSMConfig
+
+	gpuG1Points         icicle_core.HostSlice[icicle_bn254.Affine]
+	gpuG1LagrangePoints icicle_core.HostSlice[icicle_bn254.Affine]
 }
 
 func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *plonk_bn254.ProvingKey, fullWitness witness.Witness, opts *backend.ProverConfig) (*instance, error) {
@@ -229,6 +239,18 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *plonk_bn254.Provin
 	}
 	// TODO @gbotrel domain1 is used for only 1 FFT → precomputing the twiddles
 	// and storing them in memory is costly given its size. → do a FFT on the fly
+
+	// Setup GPU NTT and MSM
+	s.nttCfg = icicle_bn254.GetDefaultNttConfig()
+	s.msmCfg = icicle_bn254.GetDefaultMSMConfig()
+
+	//points := GnarkAffineToIcicleAffine(pk.Kzg.G1[:s.domain0.Cardinality])
+	points := GnarkAffineToIcicleAffine(pk.Kzg.G1)
+	s.gpuG1Points = icicle_core.HostSliceFromElements[icicle_bn254.Affine](points)
+
+	//pointsLagrange := GnarkAffineToIcicleAffine(pk.KzgLagrange.G1[:s.domain0.Cardinality])
+	pointsLagrange := GnarkAffineToIcicleAffine(pk.KzgLagrange.G1)
+	s.gpuG1LagrangePoints = icicle_core.HostSliceFromElements[icicle_bn254.Affine](pointsLagrange)
 
 	// build trace
 	s.trace = plonk_bn254.NewTrace(spr, s.domain0)
@@ -431,36 +453,39 @@ func (s *instance) deriveGammaAndBeta() error {
 	return nil
 }
 
+func gpuCommit(s *instance, points icicle_core.HostSlice[icicle_bn254.Affine], p []fr.Element) (commit curve.G1Affine) {
+	var out icicle_core.DeviceSlice
+	out.Malloc(len(p), len(p))
+
+	ss := ConvertFrToScalarFieldsBytes(p)
+	scalars := icicle_core.HostSliceFromElements[icicle_bn254.ScalarField](ss)
+
+	icicle_bn254.Msm(scalars, points[:len(p)], &s.msmCfg, out)
+
+	outHost := make(icicle_core.HostSlice[icicle_bn254.Projective], 1)
+	outHost.CopyFromDevice(&out)
+
+	gpuCommit := ProjectiveToGnarkAffine(outHost[0])
+
+	return gpuCommit
+}
+
 // commitToPolyAndBlinding computes the KZG commitment of a polynomial p
 // in Lagrange form (large degree)
 // and add the contribution of a blinding polynomial b (small degree)
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
-	cfg := icicle_bn254.GetDefaultMSMConfig()
-
-	n := int(s.domain0.Cardinality)
-	scalars := icicle_bn254.GenerateScalars(n)
-	points := icicle_bn254.GenerateAffinePoints(n)
-
-	var out icicle_core.DeviceSlice
-	stream, _ := cr.CreateStream()
-	_, e := out.MallocAsync(p.Size(), p.Size(), stream)
-	icicle_bn254.Msm(scalars, points, &cfg, out)
-	e = icicle_bn254.Msm(scalars, points, &cfg, out)
-	if e != 0 {
-		fmt.Println("error", e)
-	}
-
-	outHost := make(icicle_core.HostSlice[icicle_bn254.Projective], 1)
-	outHost.CopyFromDevice(&out)
-	out.Free()
-
-	fmt.Println("outHost", outHost)
-
+	res := gpuCommit(s, s.gpuG1LagrangePoints, p.Coefficients())
 	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
 
+	if commit != res {
+		fmt.Println("GPU and CPU commitments do not match")
+	}
+
 	// we add in the blinding contribution
+	n := int(s.domain0.Cardinality)
 	cb := commitBlindingFactor(n, b, s.pk.Kzg)
+
 	commit.Add(&commit, &cb)
 
 	return
@@ -541,7 +566,7 @@ func (s *instance) computeQuotient() (err error) {
 	}
 
 	// commit to h
-	if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg); err != nil {
+	if err := s.commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg); err != nil {
 		return err
 	}
 
@@ -896,6 +921,9 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	m := uint64(s.domain1.Cardinality)
 	mm := uint64(64 - bits.TrailingZeros64(m))
 
+	// to get everything in correct form id_ID specifically
+	s.x[id_ID].ToLagrange(s.domain0, 2).ToRegular()
+
 	for i := 0; i < rho; i++ {
 
 		coset.Mul(&coset, &shifters[i])
@@ -921,6 +949,21 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			copy(scalingVectorRev, scalingVector)
 			fft.BitReverse(scalingVectorRev)
 		}
+
+		inputARR := make([][]fr.Element, len(s.x))
+		for j := 0; j < len(s.x); j++ {
+			if j == id_ZS {
+				continue
+			} else {
+				inputARR[j] = s.x[j].Coefficients()
+			}
+		}
+
+		evalsGPU, _, err := batchNtt(inputARR, icicle_core.KInverse, scalingVector)
+		if err != nil {
+			return nil, err
+		}
+		p, _ := convertToPolynomials(evalsGPU, s.x[id_ZS])
 
 		// we do **a lot** of FFT here, but on the small domain.
 		// note that for all the polynomials in the proving key
@@ -951,12 +994,23 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			p.ToLagrange(s.domain0, nbTasks).ToRegular()
 		})
 
+		for j := 0; j < len(s.x); j++ {
+			dd := s.x[j].Coefficients()[10]
+			cc := p[j].Coefficients()[10]
+			if dd != cc {
+				fmt.Println(p[j].Coefficients()[0])
+				fmt.Println(s.x[j].Coefficients()[0])
+				//fmt.Println("GPU and CPU polynomials do not match", j)
+			}
+		}
+
 		wgBuf.Wait()
 		if _, err := iop.Evaluate(
 			allConstraints,
 			buf,
 			iop.Form{Basis: iop.Lagrange, Layout: iop.Regular},
-			s.x...,
+			//s.x...,
+			p...,
 		); err != nil {
 			return nil, err
 		}
@@ -1015,6 +1069,73 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 	return res, nil
 
+}
+
+func convertToPolynomials(evalsGPU []fr.Element, z *iop.Polynomial) ([]*iop.Polynomial, error) {
+	splits := make([][]fr.Element, 15)
+	for i := range splits {
+		splits[i] = evalsGPU[i*4096 : (i+1)*4096]
+	}
+
+	arrPolys := make([]*iop.Polynomial, 15)
+	for i := range arrPolys {
+		if i == id_ZS {
+			arrPolys[i] = z
+			continue
+		} else {
+			arrPolys[i] = iop.NewPolynomial(&splits[i], iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
+		}
+	}
+
+	return arrPolys, nil
+}
+
+func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector []fr.Element) ([]fr.Element, []fr.Element, error) {
+	chunkLen := len(coeffsList[0])
+	batchSize := len(coeffsList)
+
+	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
+	for i := 0; i < batchSize; i++ {
+		copy(pdCoeffs[i*chunkLen:], coeffsList[i])
+	}
+
+	cfg := icicle_bn254.GetDefaultNttConfig()
+	cfg.BatchSize = int32(batchSize)
+
+	exp := int(math.Ceil(math.Log2(float64(len(pdCoeffs)))))
+
+	rouMont, _ := fft.Generator(uint64(1 << exp))
+	rou := rouMont.Bits()
+	rouIcicle := icicle_bn254.ScalarField{}
+	limbs := core.ConvertUint64ArrToUint32Arr(rou[:])
+
+	rouIcicle.FromLimbs(limbs)
+	icicle_bn254.InitDomain(rouIcicle, cfg.Ctx, true)
+
+	scalars := ConvertFromFrToHostDeviceSlice(pdCoeffs)
+
+	outputDevice := make(core.HostSlice[bn254.ScalarField], len(pdCoeffs))
+
+	// ToCanonical
+	bn254.Ntt(scalars, dir, &cfg, outputDevice)
+
+	cfgVec := icicle_core.DefaultVecOpsConfig()
+
+	newVector := make([]fr.Element, 0, 61440)
+	for len(newVector) < 61440 {
+		newVector = append(newVector, scalingVector...)
+	}
+
+	scaling := ConvertFromFrToHostDeviceSlice(newVector)
+
+	bn254.VecOp(outputDevice, scaling, outputDevice, cfgVec, icicle_core.Mul)
+
+	// ToLagrange
+	bn254.Ntt(outputDevice, icicle_core.KForward, &cfg, outputDevice)
+
+	outputAsFr := ConvertScalarFieldsToFrBytes(outputDevice)
+
+	return outputAsFr, pdCoeffs, nil
 }
 
 func calculateNbTasks(n int) int {
@@ -1135,21 +1256,36 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 	return res
 }
 
-func commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey) error {
+func (s *instance) commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.Proof, kzgPk kzg.ProvingKey) error {
 	g := new(errgroup.Group)
 
 	g.Go(func() (err error) {
+		res := gpuCommit(s, s.gpuG1Points, h1)
 		proof.H[0], err = kzg.Commit(h1, kzgPk)
+
+		if res != proof.H[0] {
+			fmt.Println("GPU and CPU commitments do not match")
+		}
 		return
 	})
 
 	g.Go(func() (err error) {
+		res := gpuCommit(s, s.gpuG1Points, h2)
 		proof.H[1], err = kzg.Commit(h2, kzgPk)
+
+		if res != proof.H[1] {
+			fmt.Println("GPU and CPU commitments do not match")
+		}
 		return
 	})
 
 	g.Go(func() (err error) {
+		res := gpuCommit(s, s.gpuG1Points, h3)
 		proof.H[2], err = kzg.Commit(h3, kzgPk)
+
+		if res != proof.H[2] {
+			fmt.Println("GPU and CPU commitments do not match")
+		}
 		return
 	})
 
