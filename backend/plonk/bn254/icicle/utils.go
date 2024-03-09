@@ -1,8 +1,13 @@
 package icicle_bn254
 
 import (
+	"fmt"
+	"math/rand"
+	"time"
+
 	curve "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr/iop"
 	fiatshamir "github.com/consensys/gnark-crypto/fiat-shamir"
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 )
@@ -71,4 +76,32 @@ func bindPublicData(fs *fiatshamir.Transcript, challenge string, vk *plonk_bn254
 
 	return nil
 
+}
+
+func CheckEquality(a, b []*iop.Polynomial) {
+
+	// check random coefficient
+	rc := rand.New(rand.NewSource(time.Now().UnixNano())).Intn(4097)
+
+	for i := 0; i < len(a); i++ {
+		if a[i].Coefficients()[rc] != b[i].Coefficients()[rc] {
+			panic("equality check failed")
+		}
+		if a[i].Layout != b[i].Layout {
+			panic("layout check failed")
+		}
+		if a[i].Basis != b[i].Basis {
+			panic("basis check failed")
+		}
+	}
+}
+
+func CheckBasis(a []*iop.Polynomial) {
+
+	for i := 0; i < len(a); i++ {
+		if a[i].Basis != iop.Canonical {
+			fmt.Println("basis check failed", i)
+			panic("basis check failed")
+		}
+	}
 }

@@ -476,17 +476,17 @@ func gpuCommit(s *instance, points icicle_core.HostSlice[icicle_bn254.Affine], p
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 	res := gpuCommit(s, s.gpuG1LagrangePoints, p.Coefficients())
-	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+	//commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
 
-	if commit != res {
-		fmt.Println("GPU and CPU commitments do not match")
-	}
+	//if commit != res {
+	//	fmt.Println("GPU and CPU commitments do not match")
+	//}
 
 	// we add in the blinding contribution
 	n := int(s.domain0.Cardinality)
 	cb := commitBlindingFactor(n, b, s.pk.Kzg)
 
-	commit.Add(&commit, &cb)
+	commit.Add(&res, &cb)
 
 	return
 }
@@ -923,6 +923,9 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 	// to get everything in correct form id_ID specifically
 	s.x[id_ID].ToLagrange(s.domain0, 2).ToRegular()
+	px := make([]*iop.Polynomial, len(s.x))
+
+	inputARR := batchPolysToArr(s.x)
 
 	for i := 0; i < rho; i++ {
 
@@ -950,57 +953,15 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			fft.BitReverse(scalingVectorRev)
 		}
 
-		inputARR := make([][]fr.Element, len(s.x))
-		for j := 0; j < len(s.x); j++ {
-			if j == id_ZS {
-				continue
-			} else {
-				inputARR[j] = s.x[j].Coefficients()
-			}
-		}
-
-		evalsGPU, _, err := batchNtt(inputARR, icicle_core.KInverse, scalingVector)
+		evalsGPU, _ := batchNtt(inputARR, icicle_core.KInverse, scalingVector)
 		if err != nil {
 			return nil, err
 		}
-		p, _ := convertToPolynomials(evalsGPU, s.x[id_ZS])
+		px = convertToPolynomials(evalsGPU, s.x[id_ZS])
 
-		// we do **a lot** of FFT here, but on the small domain.
-		// note that for all the polynomials in the proving key
-		// (Ql, Qr, Qm, Qo, S1, S2, S3, Qcp, Qc) and ID, LOne
-		// we could pre-compute theses rho*2 FFTs and store them
-		// at the cost of a huge memory footprint.
-		batchApply(s.x, func(p *iop.Polynomial) {
-			nbTasks := calculateNbTasks(len(s.x)-1) * 2
-			// shift polynomials to be in the correct coset
-			p.ToCanonical(s.domain0, nbTasks)
-
-			// scale by shifter[i]
-			var w []fr.Element
-			if p.Layout == iop.Regular {
-				w = scalingVector
-			} else {
-				w = scalingVectorRev
-			}
-
-			cp := p.Coefficients()
-			utils.Parallelize(len(cp), func(start, end int) {
-				for j := start; j < end; j++ {
-					cp[j].Mul(&cp[j], &w[j])
-				}
-			}, nbTasks)
-
-			// fft in the correct coset
-			p.ToLagrange(s.domain0, nbTasks).ToRegular()
-		})
-
-		for j := 0; j < len(s.x); j++ {
-			dd := s.x[j].Coefficients()[10]
-			cc := p[j].Coefficients()[10]
-			if dd != cc {
-				fmt.Println(p[j].Coefficients()[0])
-				fmt.Println(s.x[j].Coefficients()[0])
-				//fmt.Println("GPU and CPU polynomials do not match", j)
+		for j := 0; j < len(px); j++ {
+			for i := 0; i < len(px[j].Coefficients()); i++ {
+				s.x[j].Coefficients()[i].Set(&px[j].Coefficients()[i])
 			}
 		}
 
@@ -1010,7 +971,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			buf,
 			iop.Form{Basis: iop.Lagrange, Layout: iop.Regular},
 			//s.x...,
-			p...,
+			px...,
 		); err != nil {
 			return nil, err
 		}
@@ -1071,7 +1032,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 }
 
-func convertToPolynomials(evalsGPU []fr.Element, z *iop.Polynomial) ([]*iop.Polynomial, error) {
+func convertToPolynomials(evalsGPU []fr.Element, z *iop.Polynomial) []*iop.Polynomial {
 	splits := make([][]fr.Element, 15)
 	for i := range splits {
 		splits[i] = evalsGPU[i*4096 : (i+1)*4096]
@@ -1087,10 +1048,23 @@ func convertToPolynomials(evalsGPU []fr.Element, z *iop.Polynomial) ([]*iop.Poly
 		}
 	}
 
-	return arrPolys, nil
+	return arrPolys
 }
 
-func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector []fr.Element) ([]fr.Element, []fr.Element, error) {
+func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
+	inputARR := make([][]fr.Element, len(ps))
+	for j := 0; j < len(ps); j++ {
+		if j == id_ZS {
+			continue
+		} else {
+			inputARR[j] = ps[j].Coefficients()
+		}
+	}
+	return inputARR
+
+}
+
+func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
 	chunkLen := len(coeffsList[0])
 	batchSize := len(coeffsList)
 
@@ -1135,7 +1109,7 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	outputAsFr := ConvertScalarFieldsToFrBytes(outputDevice)
 
-	return outputAsFr, pdCoeffs, nil
+	return outputAsFr, pdCoeffs
 }
 
 func calculateNbTasks(n int) int {
@@ -1260,32 +1234,32 @@ func (s *instance) commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.
 	g := new(errgroup.Group)
 
 	g.Go(func() (err error) {
-		res := gpuCommit(s, s.gpuG1Points, h1)
-		proof.H[0], err = kzg.Commit(h1, kzgPk)
+		proof.H[0] = gpuCommit(s, s.gpuG1Points, h1)
+		//proof.H[0], err = kzg.Commit(h1, kzgPk)
 
-		if res != proof.H[0] {
-			fmt.Println("GPU and CPU commitments do not match")
-		}
+		//if res != proof.H[0] {
+		//	fmt.Println("GPU and CPU commitments do not match")
+		//}
 		return
 	})
 
 	g.Go(func() (err error) {
-		res := gpuCommit(s, s.gpuG1Points, h2)
-		proof.H[1], err = kzg.Commit(h2, kzgPk)
+		proof.H[1] = gpuCommit(s, s.gpuG1Points, h2)
+		//proof.H[1], err = kzg.Commit(h2, kzgPk)
 
-		if res != proof.H[1] {
-			fmt.Println("GPU and CPU commitments do not match")
-		}
+		//if res != proof.H[1] {
+		//	fmt.Println("GPU and CPU commitments do not match")
+		//}
 		return
 	})
 
 	g.Go(func() (err error) {
-		res := gpuCommit(s, s.gpuG1Points, h3)
-		proof.H[2], err = kzg.Commit(h3, kzgPk)
+		proof.H[2] = gpuCommit(s, s.gpuG1Points, h3)
+		//proof.H[2], err = kzg.Commit(h3, kzgPk)
 
-		if res != proof.H[2] {
-			fmt.Println("GPU and CPU commitments do not match")
-		}
+		//if res != proof.H[2] {
+		//	fmt.Println("GPU and CPU commitments do not match")
+		//}
 		return
 	})
 
