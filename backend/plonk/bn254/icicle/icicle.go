@@ -88,7 +88,7 @@ func Prove(spr *cs.SparseR1CS, pk *plonk_bn254.ProvingKey, fullWitness witness.W
 	log := logger.Logger().With().
 		Str("curve", spr.CurveID().String()).
 		Int("nbConstraints", spr.GetNbConstraints()).
-		Str("backend", "plonk").Logger()
+		Str("backend", "icicle_plonk").Logger()
 
 	// parse the options
 	opt, err := backend.NewProverConfig(opts...)
@@ -924,7 +924,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	// to get everything in correct form id_ID specifically
 	s.x[id_ID].ToLagrange(s.domain0, 2).ToRegular()
 	px := make([]*iop.Polynomial, len(s.x))
-
 	inputARR := batchPolysToArr(s.x)
 
 	for i := 0; i < rho; i++ {
