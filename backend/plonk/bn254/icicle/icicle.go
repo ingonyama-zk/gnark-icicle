@@ -1033,8 +1033,10 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 func convertToPolynomials(evalsGPU []fr.Element, z *iop.Polynomial) []*iop.Polynomial {
 	splits := make([][]fr.Element, 15)
+	n := (len(evalsGPU) / 15)
+
 	for i := range splits {
-		splits[i] = evalsGPU[i*4096 : (i+1)*4096]
+		splits[i] = evalsGPU[i*n : (i+1)*n]
 	}
 
 	arrPolys := make([]*iop.Polynomial, 15)
@@ -1094,8 +1096,10 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
-	newVector := make([]fr.Element, 0, 61440)
-	for len(newVector) < 61440 {
+	size := (len(coeffsList[0]) * 15)
+
+	newVector := make([]fr.Element, 0, size)
+	for len(newVector) < size {
 		newVector = append(newVector, scalingVector...)
 	}
 
