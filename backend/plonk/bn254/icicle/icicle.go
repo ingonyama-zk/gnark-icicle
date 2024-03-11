@@ -1099,9 +1099,9 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	//size := (len(coeffsList[0]) * 15)
 
-	newVector := make([]fr.Element, 0, outputDevice.Len())
-	for j := 0; j < 15; j++ {
-		newVector = append(newVector, scalingVector...)
+	newVector := make([]fr.Element, chunkLen*batchSize)
+	for j := 0; j < batchSize; j++ {
+		copy(newVector[j*chunkLen:], scalingVector)
 	}
 
 	scaling := ConvertFromFrToHostDeviceSlice(newVector)
