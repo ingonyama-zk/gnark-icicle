@@ -244,6 +244,17 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *plonk_bn254.Provin
 	s.nttCfg = icicle_bn254.GetDefaultNttConfig()
 	s.msmCfg = icicle_bn254.GetDefaultMSMConfig()
 
+	exp := int(math.Ceil(math.Log2(float64(s.domain0.Cardinality))))
+
+	rouMont, _ := fft.Generator(uint64(1 << exp))
+	rou := rouMont.Bits()
+	rouIcicle := icicle_bn254.ScalarField{}
+	limbs := core.ConvertUint64ArrToUint32Arr(rou[:])
+
+	rouIcicle.FromLimbs(limbs)
+
+	icicle_bn254.InitDomain(rouIcicle, s.nttCfg.Ctx, false)
+
 	//points := GnarkAffineToIcicleAffine(pk.Kzg.G1[:s.domain0.Cardinality])
 	points := GnarkAffineToIcicleAffine(pk.Kzg.G1)
 	s.gpuG1Points = icicle_core.HostSliceFromElements[icicle_bn254.Affine](points)
@@ -1076,16 +1087,6 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfg.BatchSize = int32(batchSize)
-
-	exp := int(math.Ceil(math.Log2(float64(len(pdCoeffs)))))
-
-	rouMont, _ := fft.Generator(uint64(1 << exp))
-	rou := rouMont.Bits()
-	rouIcicle := icicle_bn254.ScalarField{}
-	limbs := core.ConvertUint64ArrToUint32Arr(rou[:])
-
-	rouIcicle.FromLimbs(limbs)
-	icicle_bn254.InitDomain(rouIcicle, cfg.Ctx, true)
 
 	scalars := ConvertFromFrToHostDeviceSlice(pdCoeffs)
 
