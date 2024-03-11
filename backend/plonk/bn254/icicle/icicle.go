@@ -1090,7 +1090,7 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	scalars := ConvertFromFrToHostDeviceSlice(pdCoeffs)
 
-	outputDevice := make(core.HostSlice[bn254.ScalarField], len(pdCoeffs))
+	outputDevice := make(core.HostSlice[bn254.ScalarField], chunkLen*batchSize)
 
 	// ToCanonical
 	bn254.Ntt(scalars, dir, &cfg, outputDevice)
