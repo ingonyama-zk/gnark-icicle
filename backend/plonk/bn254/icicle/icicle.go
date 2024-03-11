@@ -1088,12 +1088,12 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfg.BatchSize = int32(batchSize)
 
-	scalars := ConvertFromFrToHostDeviceSlice(pdCoeffs)
+	scalars := ConvertFrToScalarFieldsBytes(pdCoeffs)
 
-	outputDevice := make(core.HostSlice[bn254.ScalarField], chunkLen*batchSize)
+	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
 
 	// ToCanonical
-	bn254.Ntt(scalars, dir, &cfg, outputDevice)
+	bn254.Ntt(hostDeviceScalarSlice, dir, &cfg, hostDeviceScalarSlice)
 
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
@@ -1106,14 +1106,12 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	scaling := ConvertFromFrToHostDeviceSlice(newVector)
 
-	fmt.Println("scaling", scaling.Len(), "outputDevice", outputDevice.Len())
-
-	bn254.VecOp(outputDevice, scaling, outputDevice, cfgVec, icicle_core.Mul)
+	bn254.VecOp(hostDeviceScalarSlice, scaling, hostDeviceScalarSlice, cfgVec, icicle_core.Mul)
 
 	// ToLagrange
-	bn254.Ntt(outputDevice, icicle_core.KForward, &cfg, outputDevice)
+	bn254.Ntt(hostDeviceScalarSlice, icicle_core.KForward, &cfg, hostDeviceScalarSlice)
 
-	outputAsFr := ConvertScalarFieldsToFrBytes(outputDevice)
+	outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 
 	return outputAsFr, pdCoeffs
 }
