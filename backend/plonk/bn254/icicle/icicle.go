@@ -1106,6 +1106,8 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	scaling := ConvertFromFrToHostDeviceSlice(newVector)
 
+	fmt.Println("scaling", scaling.Len(), "outputDevice", outputDevice.Len())
+
 	bn254.VecOp(outputDevice, scaling, outputDevice, cfgVec, icicle_core.Mul)
 
 	// ToLagrange
