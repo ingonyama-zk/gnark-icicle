@@ -1,6 +1,6 @@
 module github.com/consensys/gnark
 
-go 1.21.6
+go 1.20//1.6
 
 require (
 	github.com/bits-and-blooms/bitset v1.8.0
@@ -12,6 +12,7 @@ require (
 	github.com/google/go-cmp v0.5.9
 	github.com/google/pprof v0.0.0-20230817174616-7a8ec2ada47b
 	github.com/icza/bitio v1.1.0
+	github.com/ingonyama-zk/icicle v1.7.0
 	github.com/ingonyama-zk/iciclegnark v0.1.0
 	github.com/leanovate/gopter v0.2.9
 	github.com/rs/zerolog v1.30.0
@@ -22,13 +23,14 @@ require (
 )
 
 require (
+	github.com/consensys/gnark-ignition-verifier v0.0.0-20230527014722-10693546ab33 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/ingonyama-zk/icicle v1.7.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
+	github.com/succinctlabs/gnark-plonky2-verifier v0.1.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/sys v0.15.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
