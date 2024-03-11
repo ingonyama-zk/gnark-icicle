@@ -1097,9 +1097,9 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
-	size := (len(coeffsList[0]) * 15)
+	//size := (len(coeffsList[0]) * 15)
 
-	newVector := make([]fr.Element, 0, size)
+	newVector := make([]fr.Element, 0, outputDevice.Len())
 	for j := 0; j < 15; j++ {
 		newVector = append(newVector, scalingVector...)
 	}
