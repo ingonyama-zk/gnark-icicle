@@ -1100,7 +1100,7 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 	size := (len(coeffsList[0]) * 15)
 
 	newVector := make([]fr.Element, 0, size)
-	for len(newVector) < size {
+	for j := 0; j < 15; j++ {
 		newVector = append(newVector, scalingVector...)
 	}
 
