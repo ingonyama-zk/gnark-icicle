@@ -963,7 +963,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			fft.BitReverse(scalingVectorRev)
 		}
 
-		evalsGPU, _ := batchNtt(inputARR, icicle_core.KInverse, scalingVector)
+		evalsGPU, _ := batchNtt(inputARR, scalingVector)
 		if err != nil {
 			return nil, err
 		}
@@ -1076,7 +1076,7 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 
 }
 
-func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
+func batchNtt(coeffsList [][]fr.Element, scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
 	chunkLen := len(coeffsList[0])
 	batchSize := len(coeffsList)
 
@@ -1094,9 +1094,7 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
 	hostDeviceScalarSlice.CopyToDevice(&deviceInput, true)
 
-	// ToCanonical
-	bn254.Ntt(deviceInput, dir, &cfg, deviceInput)
-
+	// Set everything up for the Vec Ops
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
 	newVector := make([]fr.Element, chunkLen*batchSize)
@@ -1104,15 +1102,29 @@ func batchNtt(coeffsList [][]fr.Element, dir icicle_core.NTTDir, scalingVector [
 		copy(newVector[j*chunkLen:], scalingVector)
 	}
 
-	var scalingInput core.DeviceSlice
 	scaling := ConvertFrToScalarFieldsBytes(newVector)
-	scalingDevice := core.HostSliceFromElements[bn254.ScalarField](scaling)
-	scalingDevice.CopyToDevice(&scalingInput, true)
+	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
 
-	bn254.VecOp(deviceInput, scalingDevice, deviceInput, cfgVec, icicle_core.Mul)
+	mid := len(hostDeviceScalingSlice) / 2
+	scalingB := hostDeviceScalingSlice[:mid]
+	scalingA := hostDeviceScalingSlice[mid:]
+
+	// ToCanonical
+	bn254.Ntt(deviceInput, icicle_core.KInverse, &cfg, hostDeviceScalarSlice)
+
+	scalarA := hostDeviceScalarSlice[:mid]
+	scalarB := hostDeviceScalarSlice[mid:]
+
+	// VecOp A
+	bn254.VecOp(scalarA, scalingA, scalarA, cfgVec, icicle_core.Mul)
+
+	// VecOp B
+	bn254.VecOp(scalarB, scalingB, scalarB, cfgVec, icicle_core.Mul)
+
+	hostDeviceScalarSlice = append(scalarA, scalarB...)
 
 	// ToLagrange
-	bn254.Ntt(deviceInput, icicle_core.KForward, &cfg, hostDeviceScalarSlice)
+	bn254.Ntt(hostDeviceScalarSlice, icicle_core.KForward, &cfg, hostDeviceScalarSlice)
 
 	outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 
