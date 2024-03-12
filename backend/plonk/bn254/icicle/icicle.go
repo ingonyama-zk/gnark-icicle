@@ -963,10 +963,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			fft.BitReverse(scalingVectorRev)
 		}
 
-		evalsGPU, _ := s.onDeviceNtt(scalingVector)
-		if err != nil {
-			return nil, err
-		}
+		evalsGPU := s.onDeviceNtt(scalingVector)
 		px = convertToPolynomials(evalsGPU, s.x[id_ZS])
 
 		for j := 0; j < len(px); j++ {
@@ -1076,51 +1073,7 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 
 }
 
-func batchNtt(coeffsList [][]fr.Element, scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
-	// Set everything up for the Vec Ops
-	cfg := icicle_bn254.GetDefaultNttConfig()
-	cfgVec := icicle_core.DefaultVecOpsConfig()
-
-	chunkLen := len(coeffsList[0])
-	batchSize := len(coeffsList)
-	cfg.BatchSize = int32(batchSize)
-
-	// Scalar Fields
-	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
-	for i := 0; i < batchSize; i++ {
-		copy(pdCoeffs[i*chunkLen:], coeffsList[i])
-	}
-
-	scalars := ConvertFrToScalarFieldsBytes(pdCoeffs)
-
-	var deviceInput core.DeviceSlice
-	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-	hostDeviceScalarSlice.CopyToDevice(&deviceInput, true)
-
-	// Scaling Vector
-	newVector := make([]fr.Element, chunkLen*batchSize)
-	for j := 0; j < batchSize; j++ {
-		copy(newVector[j*chunkLen:], scalingVector)
-	}
-
-	scaling := ConvertFrToScalarFieldsBytes(newVector)
-	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
-
-	// ToCanonical
-	bn254.Ntt(deviceInput, icicle_core.KInverse, &cfg, hostDeviceScalarSlice)
-
-	// VecOp A
-	bn254.VecOp(hostDeviceScalarSlice, hostDeviceScalingSlice, hostDeviceScalarSlice, cfgVec, icicle_core.Mul)
-
-	// ToLagrange
-	bn254.Ntt(hostDeviceScalarSlice, icicle_core.KForward, &cfg, hostDeviceScalarSlice)
-
-	outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
-
-	return outputAsFr, pdCoeffs
-}
-
-func (s *instance) onDeviceNtt(scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
+func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
@@ -1153,7 +1106,7 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) ([]fr.Element, []fr.E
 		copy(pdCoeffs[i*chunkLen:], outputAsFr)
 	}
 
-	return pdCoeffs, pdCoeffs
+	return pdCoeffs
 }
 
 func calculateNbTasks(n int) int {
