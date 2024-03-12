@@ -935,7 +935,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	// to get everything in correct form id_ID specifically
 	s.x[id_ID].ToLagrange(s.domain0, 2).ToRegular()
 	px := make([]*iop.Polynomial, len(s.x))
-	inputARR := batchPolysToArr(s.x)
+	//inputARR := batchPolysToArr(s.x)
 
 	for i := 0; i < rho; i++ {
 
@@ -963,7 +963,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			fft.BitReverse(scalingVectorRev)
 		}
 
-		evalsGPU, _ := batchNtt(inputARR, scalingVector)
+		evalsGPU, _ := s.onDeviceNtt(scalingVector)
 		if err != nil {
 			return nil, err
 		}
@@ -1120,18 +1120,17 @@ func batchNtt(coeffsList [][]fr.Element, scalingVector []fr.Element) ([]fr.Eleme
 	return outputAsFr, pdCoeffs
 }
 
-func onDeviceNtt(coeffsList [][]fr.Element, scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
+func (s *instance) onDeviceNtt(scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
 	// Set everything up for the Vec Ops
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
-	chunkLen := len(coeffsList[0])
-	batchSize := len(coeffsList)
-	//cfg.BatchSize = int32(batchSize)
+	chunkLen := len(s.x[0].Coefficients())
+	batchSize := len(s.x)
 
 	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
 	for i := 0; i < batchSize; i++ {
-		scalars := ConvertFrToScalarFieldsBytes(coeffsList[i])
+		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
 		scaling := ConvertFrToScalarFieldsBytes(scalingVector)
 
 		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
