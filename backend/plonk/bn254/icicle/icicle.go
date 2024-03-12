@@ -1073,6 +1073,13 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 
 }
 
+func isPowerOfTwo(n int) bool {
+	if n == 0 {
+		return false
+	}
+	return n&(n-1) == 0
+}
+
 func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
@@ -1083,8 +1090,16 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
 	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
 
+	isPowerOfTwo := isPowerOfTwo(chunkLen)
+	if !isPowerOfTwo {
+		fmt.Println("Chunk length is not a power of two")
+	}
+
 	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
 	for i := 0; i < batchSize; i++ {
+		if i == id_ZS {
+			continue
+		}
 		var deviceInput core.DeviceSlice
 		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
 		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
@@ -1093,7 +1108,7 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 		// ToCanonical
 		bn254.Ntt(deviceInput, icicle_core.KInverse, &cfg, deviceInput)
 
-		// VecOp A
+		// VecOp.Mul
 		bn254.VecOp(deviceInput, hostDeviceScalingSlice, deviceInput, cfgVec, icicle_core.Mul)
 
 		// ToLagrange
@@ -1103,6 +1118,7 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 		deviceInput.Free()
 
 		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
+
 		copy(pdCoeffs[i*chunkLen:], outputAsFr)
 	}
 
