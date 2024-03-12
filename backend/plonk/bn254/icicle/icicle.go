@@ -1121,29 +1121,33 @@ func batchNtt(coeffsList [][]fr.Element, scalingVector []fr.Element) ([]fr.Eleme
 }
 
 func (s *instance) onDeviceNtt(scalingVector []fr.Element) ([]fr.Element, []fr.Element) {
-	// Set everything up for the Vec Ops
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
 	chunkLen := len(s.x[0].Coefficients())
 	batchSize := len(s.x)
 
+	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
+	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
+
 	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
 	for i := 0; i < batchSize; i++ {
+		var deviceInput core.DeviceSlice
 		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
-		scaling := ConvertFrToScalarFieldsBytes(scalingVector)
-
 		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-		hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
+		hostDeviceScalarSlice.CopyToDevice(&deviceInput, true)
 
 		// ToCanonical
-		bn254.Ntt(hostDeviceScalarSlice, icicle_core.KInverse, &cfg, hostDeviceScalarSlice)
+		bn254.Ntt(deviceInput, icicle_core.KInverse, &cfg, deviceInput)
 
 		// VecOp A
-		bn254.VecOp(hostDeviceScalarSlice, hostDeviceScalingSlice, hostDeviceScalarSlice, cfgVec, icicle_core.Mul)
+		bn254.VecOp(deviceInput, hostDeviceScalingSlice, deviceInput, cfgVec, icicle_core.Mul)
 
 		// ToLagrange
-		bn254.Ntt(hostDeviceScalarSlice, icicle_core.KForward, &cfg, hostDeviceScalarSlice)
+		bn254.Ntt(deviceInput, icicle_core.KForward, &cfg, deviceInput)
+
+		hostDeviceScalarSlice.CopyFromDevice(&deviceInput)
+		deviceInput.Free()
 
 		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 		copy(pdCoeffs[i*chunkLen:], outputAsFr)
