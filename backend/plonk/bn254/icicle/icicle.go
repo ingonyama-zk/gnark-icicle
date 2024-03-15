@@ -1039,15 +1039,15 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 }
 
-func convertToPolynomials(evalsGPU []fr.Element, z *iop.Polynomial) []*iop.Polynomial {
-	splits := make([][]fr.Element, 15)
-	n := (len(evalsGPU) / 15)
+func convertToPolynomials(evalsGPU []fr.Element, z *iop.Polynomial, x []*iop.Polynomial) []*iop.Polynomial {
+	splits := make([][]fr.Element, len(x))
+	n := (len(evalsGPU) / len(x))
 
 	for i := range splits {
 		splits[i] = evalsGPU[i*n : (i+1)*n]
 	}
 
-	arrPolys := make([]*iop.Polynomial, 15)
+	arrPolys := make([]*iop.Polynomial, len(x))
 	for i := range arrPolys {
 		if i == id_ZS {
 			arrPolys[i] = z
@@ -1073,13 +1073,6 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 
 }
 
-func isPowerOfTwo(n int) bool {
-	if n == 0 {
-		return false
-	}
-	return n&(n-1) == 0
-}
-
 func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
@@ -1089,11 +1082,6 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 
 	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
 	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
-
-	isPowerOfTwo := isPowerOfTwo(chunkLen)
-	if !isPowerOfTwo {
-		fmt.Println("Chunk length is not a power of two")
-	}
 
 	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
 	for i := 0; i < batchSize; i++ {
