@@ -964,7 +964,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		}
 
 		evalsGPU := s.onDeviceNtt(scalingVector)
-		px = convertToPolynomials(evalsGPU, s.x[id_ZS])
+		px = convertToPolynomials(evalsGPU, s.x[id_ZS], s.x)
 
 		for j := 0; j < len(px); j++ {
 			for i := 0; i < len(px[j].Coefficients()); i++ {
