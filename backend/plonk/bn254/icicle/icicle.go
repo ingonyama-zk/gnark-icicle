@@ -24,8 +24,6 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/hash_to_field"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/iop"
 
-	//icicle_bn254 "github.com/consensys/gnark/backend/groth16.bak/bn254/icicle"
-
 	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
@@ -44,6 +42,8 @@ import (
 	icicle_core "github.com/ingonyama-zk/icicle/wrappers/golang/core"
 	"github.com/ingonyama-zk/icicle/wrappers/golang/curves/bn254"
 	icicle_bn254 "github.com/ingonyama-zk/icicle/wrappers/golang/curves/bn254"
+
+	cr "github.com/ingonyama-zk/icicle/wrappers/golang/cuda_runtime"
 )
 
 const HasIcicle = true
@@ -1088,10 +1088,16 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 		if i == id_ZS {
 			continue
 		}
+
+		stream, _ := cr.CreateStream()
+
+		cfg.Ctx.Stream = &stream
+		cfg.IsAsync = true
+
 		var deviceInput core.DeviceSlice
 		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
 		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-		hostDeviceScalarSlice.CopyToDevice(&deviceInput, true)
+		hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
 
 		// ToCanonical
 		bn254.Ntt(deviceInput, icicle_core.KInverse, &cfg, deviceInput)
@@ -1102,7 +1108,7 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 		// ToLagrange
 		bn254.Ntt(deviceInput, icicle_core.KForward, &cfg, deviceInput)
 
-		hostDeviceScalarSlice.CopyFromDevice(&deviceInput)
+		hostDeviceScalarSlice.CopyFromDeviceAsync(&deviceInput, stream)
 		deviceInput.Free()
 
 		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
