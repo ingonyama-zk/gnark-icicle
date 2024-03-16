@@ -1122,33 +1122,39 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
 	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
 
+	stream, _ := cr.CreateStream()
+
+	cfg.Ctx.Stream = &stream
+	cfg.IsAsync = true
+
+	deviceInputs := make([]icicle_core.DeviceSlice, batchSize)
+	for j := 0; j < len(s.x); j++ {
+		var deviceInput core.DeviceSlice
+		scalars := ConvertFrToScalarFieldsBytes(s.x[j].Coefficients())
+		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
+		hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
+
+		deviceInputs[j] = deviceInput
+	}
+
 	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
 	for i := 0; i < batchSize; i++ {
 		if i == id_ZS {
 			continue
 		}
-
-		stream, _ := cr.CreateStream()
-
-		cfg.Ctx.Stream = &stream
-		cfg.IsAsync = true
-
-		var deviceInput core.DeviceSlice
 		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
 		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-		hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
 
 		// ToCanonical
-		bn254.Ntt(deviceInput, icicle_core.KInverse, &cfg, deviceInput)
+		bn254.Ntt(deviceInputs[i], icicle_core.KInverse, &cfg, deviceInputs[i])
 
 		// VecOp.Mul
-		bn254.VecOp(deviceInput, hostDeviceScalingSlice, deviceInput, cfgVec, icicle_core.Mul)
+		bn254.VecOp(deviceInputs[i], hostDeviceScalingSlice, deviceInputs[i], cfgVec, icicle_core.Mul)
 
 		// ToLagrange
-		bn254.Ntt(deviceInput, icicle_core.KForward, &cfg, deviceInput)
+		bn254.Ntt(deviceInputs[i], icicle_core.KForward, &cfg, deviceInputs[i])
 
-		hostDeviceScalarSlice.CopyFromDeviceAsync(&deviceInput, stream)
-		deviceInput.Free()
+		hostDeviceScalarSlice.CopyFromDeviceAsync(&deviceInputs[i], stream)
 
 		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 
