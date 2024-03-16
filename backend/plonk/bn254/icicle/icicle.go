@@ -96,14 +96,14 @@ func Prove(spr *cs.SparseR1CS, pk *plonk_bn254.ProvingKey, fullWitness witness.W
 		return nil, fmt.Errorf("get prover options: %w", err)
 	}
 
-	start := time.Now()
-
 	// init instance
 	g, ctx := errgroup.WithContext(context.Background())
 	instance, err := newInstance(ctx, spr, pk, fullWitness, &opt)
 	if err != nil {
 		return nil, fmt.Errorf("new instance: %w", err)
 	}
+
+	start := time.Now()
 
 	// solve constraints
 	g.Go(instance.solveConstraints)
@@ -193,9 +193,17 @@ type instance struct {
 
 	gpuG1Points         icicle_core.HostSlice[icicle_bn254.Affine]
 	gpuG1LagrangePoints icicle_core.HostSlice[icicle_bn254.Affine]
+
+	deviceInputG1Lagrange core.DeviceSlice
+	deviceInputG1         core.DeviceSlice
 }
 
 func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *plonk_bn254.ProvingKey, fullWitness witness.Witness, opts *backend.ProverConfig) (*instance, error) {
+	log := logger.Logger().With().Str("position", "start").Logger()
+	log.Info().Msg("setupDevicePointers")
+
+	start := time.Now()
+
 	if opts.HashToFieldFn == nil {
 		opts.HashToFieldFn = hash_to_field.New([]byte("BSB22-Plonk"))
 	}
@@ -255,16 +263,27 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *plonk_bn254.Provin
 
 	icicle_bn254.InitDomain(rouIcicle, s.nttCfg.Ctx, false)
 
+	stream, _ := cr.CreateStream()
+
 	//points := GnarkAffineToIcicleAffine(pk.Kzg.G1[:s.domain0.Cardinality])
+	var deviceInputG1 core.DeviceSlice
 	points := GnarkAffineToIcicleAffine(pk.Kzg.G1)
 	s.gpuG1Points = icicle_core.HostSliceFromElements[icicle_bn254.Affine](points)
+	s.gpuG1Points.CopyToDeviceAsync(&deviceInputG1, stream, true)
 
 	//pointsLagrange := GnarkAffineToIcicleAffine(pk.KzgLagrange.G1[:s.domain0.Cardinality])
-	pointsLagrange := GnarkAffineToIcicleAffine(pk.KzgLagrange.G1)
+	var deviceInputG1Lagrange core.DeviceSlice
+	pointsLagrange := GnarkAffineToIcicleAffine(pk.KzgLagrange.G1[:s.domain0.Cardinality])
 	s.gpuG1LagrangePoints = icicle_core.HostSliceFromElements[icicle_bn254.Affine](pointsLagrange)
+	s.gpuG1LagrangePoints.CopyToDeviceAsync(&deviceInputG1Lagrange, stream, true)
+
+	s.deviceInputG1 = deviceInputG1
+	s.deviceInputG1Lagrange = deviceInputG1Lagrange
 
 	// build trace
 	s.trace = plonk_bn254.NewTrace(spr, s.domain0)
+
+	log.Debug().Dur("took", time.Since(start)).Msg("Device Setup Complete")
 
 	return &s, nil
 }
@@ -464,7 +483,7 @@ func (s *instance) deriveGammaAndBeta() error {
 	return nil
 }
 
-func gpuCommit(s *instance, points icicle_core.HostSlice[icicle_bn254.Affine], p []fr.Element) (commit curve.G1Affine) {
+func (s *instance) gpuCommit(points icicle_core.HostSlice[icicle_bn254.Affine], p []fr.Element) (commit curve.G1Affine) {
 	var out icicle_core.DeviceSlice
 	out.Malloc(len(p), len(p))
 
@@ -481,17 +500,29 @@ func gpuCommit(s *instance, points icicle_core.HostSlice[icicle_bn254.Affine], p
 	return gpuCommit
 }
 
+func (s *instance) gpuLagrangeCommit(p []fr.Element) (commit curve.G1Affine) {
+	var out icicle_core.DeviceSlice
+	out.Malloc(len(p), len(p))
+
+	ss := ConvertFrToScalarFieldsBytes(p)
+	scalars := icicle_core.HostSliceFromElements[icicle_bn254.ScalarField](ss)
+
+	icicle_bn254.Msm(scalars, s.deviceInputG1Lagrange, &s.msmCfg, out)
+
+	outHost := make(icicle_core.HostSlice[icicle_bn254.Projective], 1)
+	outHost.CopyFromDevice(&out)
+
+	gpuCommit := ProjectiveToGnarkAffine(outHost[0])
+
+	return gpuCommit
+}
+
 // commitToPolyAndBlinding computes the KZG commitment of a polynomial p
 // in Lagrange form (large degree)
 // and add the contribution of a blinding polynomial b (small degree)
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
-	res := gpuCommit(s, s.gpuG1LagrangePoints, p.Coefficients())
-	//commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
-
-	//if commit != res {
-	//	fmt.Println("GPU and CPU commitments do not match")
-	//}
+	res := s.gpuLagrangeCommit(p.Coefficients())
 
 	// we add in the blinding contribution
 	n := int(s.domain0.Cardinality)
@@ -727,11 +758,12 @@ func (s *instance) computeLinearizedPolynomial() error {
 		s.pk,
 	)
 
-	var err error
-	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
-	if err != nil {
-		return err
-	}
+	//var err error
+	s.linearizedPolynomialDigest = s.gpuCommit(s.gpuG1Points, s.linearizedPolynomial)
+	//s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	//if err != nil {
+	//	return err
+	//}
 	close(s.chLinearizedPolynomial)
 	return nil
 }
@@ -774,12 +806,12 @@ func (s *instance) batchOpening() error {
 	digestsToOpen[5] = s.pk.Vk.S[1]
 
 	var err error
-	s.proof.BatchedProof, err = kzg.BatchOpenSinglePoint(
+	s.proof.BatchedProof, err = BatchOpenSinglePoint(
 		polysToOpen,
 		digestsToOpen,
 		s.zeta,
 		s.kzgFoldingHash,
-		s.pk.Kzg,
+		ProvingKey(s.pk.Kzg),
 		s.proof.ZShiftedOpening.ClaimedValue.Marshal(),
 	)
 
@@ -1241,32 +1273,17 @@ func (s *instance) commitToQuotient(h1, h2, h3 []fr.Element, proof *plonk_bn254.
 	g := new(errgroup.Group)
 
 	g.Go(func() (err error) {
-		proof.H[0] = gpuCommit(s, s.gpuG1Points, h1)
-		//proof.H[0], err = kzg.Commit(h1, kzgPk)
-
-		//if res != proof.H[0] {
-		//	fmt.Println("GPU and CPU commitments do not match")
-		//}
+		proof.H[0] = s.gpuCommit(s.gpuG1Points, h1)
 		return
 	})
 
 	g.Go(func() (err error) {
-		proof.H[1] = gpuCommit(s, s.gpuG1Points, h2)
-		//proof.H[1], err = kzg.Commit(h2, kzgPk)
-
-		//if res != proof.H[1] {
-		//	fmt.Println("GPU and CPU commitments do not match")
-		//}
+		proof.H[1] = s.gpuCommit(s.gpuG1Points, h2)
 		return
 	})
 
 	g.Go(func() (err error) {
-		proof.H[2] = gpuCommit(s, s.gpuG1Points, h3)
-		//proof.H[2], err = kzg.Commit(h3, kzgPk)
-
-		//if res != proof.H[2] {
-		//	fmt.Println("GPU and CPU commitments do not match")
-		//}
+		proof.H[2] = s.gpuCommit(s.gpuG1Points, h3)
 		return
 	})
 
