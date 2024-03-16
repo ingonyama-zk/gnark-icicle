@@ -821,6 +821,11 @@ func (s *instance) batchOpening() error {
 // evaluate the full set of constraints, all polynomials in x are back in
 // canonical regular form at the end
 func (s *instance) computeNumerator() (*iop.Polynomial, error) {
+	log := logger.Logger().With().Str("position", "start").Logger()
+	log.Info().Msg("computeNumerator")
+
+	start := time.Now()
+
 	// init vectors that are used multiple times throughout the computation
 	n := s.domain0.Cardinality
 	twiddles0 := make([]fr.Element, n)
@@ -1066,6 +1071,8 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	wgBuf.Wait()
 
 	res := iop.NewPolynomial(&cres, iop.Form{Basis: iop.LagrangeCoset, Layout: iop.BitReverse})
+
+	log.Debug().Dur("took", time.Since(start)).Msg("computeNumerator")
 
 	return res, nil
 
