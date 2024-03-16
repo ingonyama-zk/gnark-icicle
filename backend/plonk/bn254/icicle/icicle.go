@@ -973,6 +973,23 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	s.x[id_ID].ToLagrange(s.domain0, 2).ToRegular()
 	px := make([]*iop.Polynomial, len(s.x))
 	//inputARR := batchPolysToArr(s.x)
+	//
+
+	stream, _ := cr.CreateStream()
+	cfg := icicle_bn254.GetDefaultNttConfig()
+
+	cfg.Ctx.Stream = &stream
+	cfg.IsAsync = true
+
+	deviceInputs := make([]icicle_core.DeviceSlice, len(s.x))
+	for j := 0; j < len(s.x); j++ {
+		var deviceInput core.DeviceSlice
+		scalars := ConvertFrToScalarFieldsBytes(s.x[j].Coefficients())
+		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
+		hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
+
+		deviceInputs[j] = deviceInput
+	}
 
 	for i := 0; i < rho; i++ {
 
@@ -1000,7 +1017,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			fft.BitReverse(scalingVectorRev)
 		}
 
-		evalsGPU := s.onDeviceNtt(scalingVector)
+		evalsGPU := s.onDeviceNtt(deviceInputs, scalingVector)
 		px = convertToPolynomials(evalsGPU, s.x[id_ZS], s.x)
 
 		for j := 0; j < len(px); j++ {
@@ -1112,7 +1129,7 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 
 }
 
-func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
+func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVector []fr.Element) []fr.Element {
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
@@ -1126,16 +1143,6 @@ func (s *instance) onDeviceNtt(scalingVector []fr.Element) []fr.Element {
 
 	cfg.Ctx.Stream = &stream
 	cfg.IsAsync = true
-
-	deviceInputs := make([]icicle_core.DeviceSlice, batchSize)
-	for j := 0; j < len(s.x); j++ {
-		var deviceInput core.DeviceSlice
-		scalars := ConvertFrToScalarFieldsBytes(s.x[j].Coefficients())
-		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-		hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
-
-		deviceInputs[j] = deviceInput
-	}
 
 	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
 	for i := 0; i < batchSize; i++ {
