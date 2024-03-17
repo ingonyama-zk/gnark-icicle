@@ -1132,9 +1132,6 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 	hostDeviceScalingSlice.CopyToDeviceAsync(&scalingDevice[0], stream, true)
 
 	batchApplyDevice(deviceInputs, func(p icicle_core.DeviceSlice, i int) {
-		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
-		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-
 		bn254.Ntt(p, icicle_core.KInverse, &cfg, p)
 
 		// VecOp.Mul
@@ -1143,13 +1140,20 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 		// ToLagrange
 		bn254.Ntt(p, icicle_core.KForward, &cfg, p)
 
-		hostDeviceScalarSlice.CopyFromDevice(&p)
-		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
+	})
+	scalars := ConvertFrToScalarFieldsBytes(s.x[0].Coefficients())
+	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
 
+	for i := 0; i < len(s.x); i++ {
+		if i == id_ZS {
+			continue
+		}
+		hostDeviceScalarSlice.CopyFromDevice(&deviceInputs[i])
+		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 		for j := 0; j < len(outputAsFr); j++ {
 			s.x[i].Coefficients()[j].Set(&outputAsFr[j])
 		}
-	})
+	}
 
 }
 
