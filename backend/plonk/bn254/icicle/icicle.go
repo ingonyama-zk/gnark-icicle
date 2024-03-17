@@ -1118,6 +1118,11 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 }
 
 func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVector []fr.Element) {
+	log := logger.Logger().With().Str("position", "start").Logger()
+	log.Info().Msg("onDeviceNtt")
+
+	start := time.Now()
+
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
@@ -1141,9 +1146,11 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 		bn254.Ntt(p, icicle_core.KForward, &cfg, p)
 
 	})
+
 	scalars := ConvertFrToScalarFieldsBytes(s.x[0].Coefficients())
 	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
 
+	memStart := time.Now()
 	for i := 0; i < len(s.x); i++ {
 		if i == id_ZS {
 			continue
@@ -1154,7 +1161,9 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 			s.x[i].Coefficients()[j].Set(&outputAsFr[j])
 		}
 	}
+	log.Debug().Dur("took", time.Since(memStart)).Msg("onDeviceNtt MemCpy")
 
+	log.Debug().Dur("took", time.Since(start)).Msg("onDeviceNtt")
 }
 
 func calculateNbTasks(n int) int {
