@@ -1121,13 +1121,15 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
-	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
-	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
-
 	stream, _ := cr.CreateStream()
 
 	cfg.Ctx.Stream = &stream
 	cfg.IsAsync = true
+
+	scalingDevice := make([]icicle_core.DeviceSlice, len(scalingVector))
+	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
+	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
+	hostDeviceScalingSlice.CopyToDeviceAsync(&scalingDevice[0], stream, true)
 
 	batchApplyDevice(deviceInputs, func(p icicle_core.DeviceSlice, i int) {
 		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
@@ -1136,12 +1138,12 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 		bn254.Ntt(p, icicle_core.KInverse, &cfg, p)
 
 		// VecOp.Mul
-		bn254.VecOp(p, hostDeviceScalingSlice, p, cfgVec, icicle_core.Mul)
+		bn254.VecOp(p, scalingDevice[0], p, cfgVec, icicle_core.Mul)
 
 		// ToLagrange
 		bn254.Ntt(p, icicle_core.KForward, &cfg, p)
 
-		hostDeviceScalarSlice.CopyFromDeviceAsync(&p, stream)
+		hostDeviceScalarSlice.CopyFromDevice(&p)
 		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 
 		for j := 0; j < len(outputAsFr); j++ {
