@@ -971,9 +971,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 
 	// to get everything in correct form id_ID specifically
 	s.x[id_ID].ToLagrange(s.domain0, 2).ToRegular()
-	px := make([]*iop.Polynomial, len(s.x))
-	//inputARR := batchPolysToArr(s.x)
-	//
 
 	stream, _ := cr.CreateStream()
 	cfg := icicle_bn254.GetDefaultNttConfig()
@@ -1017,22 +1014,14 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			fft.BitReverse(scalingVectorRev)
 		}
 
-		evalsGPU := s.onDeviceNtt(deviceInputs, scalingVector)
-		px = convertToPolynomials(evalsGPU, s.x[id_ZS], s.x)
-
-		for j := 0; j < len(px); j++ {
-			for i := 0; i < len(px[j].Coefficients()); i++ {
-				s.x[j].Coefficients()[i].Set(&px[j].Coefficients()[i])
-			}
-		}
+		s.onDeviceNtt(deviceInputs, scalingVector)
 
 		wgBuf.Wait()
 		if _, err := iop.Evaluate(
 			allConstraints,
 			buf,
 			iop.Form{Basis: iop.Lagrange, Layout: iop.Regular},
-			//s.x...,
-			px...,
+			s.x...,
 		); err != nil {
 			return nil, err
 		}
@@ -1044,7 +1033,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			}
 			wgBuf.Done()
 		}(i)
-
 		tmp.Inverse(&tmp)
 		// bl <- bl *( (s*ωⁱ)ⁿ-1 )s
 		for _, q := range s.bp {
@@ -1129,12 +1117,9 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 
 }
 
-func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVector []fr.Element) []fr.Element {
+func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVector []fr.Element) {
 	cfg := icicle_bn254.GetDefaultNttConfig()
 	cfgVec := icicle_core.DefaultVecOpsConfig()
-
-	chunkLen := len(s.x[0].Coefficients())
-	batchSize := len(s.x)
 
 	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
 	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
@@ -1144,31 +1129,26 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 	cfg.Ctx.Stream = &stream
 	cfg.IsAsync = true
 
-	pdCoeffs := make([]fr.Element, chunkLen*batchSize)
-	for i := 0; i < batchSize; i++ {
-		if i == id_ZS {
-			continue
-		}
+	batchApplyDevice(deviceInputs, func(p icicle_core.DeviceSlice, i int) {
 		scalars := ConvertFrToScalarFieldsBytes(s.x[i].Coefficients())
 		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
 
-		// ToCanonical
-		bn254.Ntt(deviceInputs[i], icicle_core.KInverse, &cfg, deviceInputs[i])
+		bn254.Ntt(p, icicle_core.KInverse, &cfg, p)
 
 		// VecOp.Mul
-		bn254.VecOp(deviceInputs[i], hostDeviceScalingSlice, deviceInputs[i], cfgVec, icicle_core.Mul)
+		bn254.VecOp(p, hostDeviceScalingSlice, p, cfgVec, icicle_core.Mul)
 
 		// ToLagrange
-		bn254.Ntt(deviceInputs[i], icicle_core.KForward, &cfg, deviceInputs[i])
+		bn254.Ntt(p, icicle_core.KForward, &cfg, p)
 
-		hostDeviceScalarSlice.CopyFromDeviceAsync(&deviceInputs[i], stream)
-
+		hostDeviceScalarSlice.CopyFromDeviceAsync(&p, stream)
 		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 
-		copy(pdCoeffs[i*chunkLen:], outputAsFr)
-	}
+		for j := 0; j < len(outputAsFr); j++ {
+			s.x[i].Coefficients()[j].Set(&outputAsFr[j])
+		}
+	})
 
-	return pdCoeffs
 }
 
 func calculateNbTasks(n int) int {
@@ -1190,6 +1170,22 @@ func batchApply(x []*iop.Polynomial, fn func(*iop.Polynomial)) {
 		wg.Add(1)
 		go func(i int) {
 			fn(x[i])
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+}
+
+// batchApply executes fn on all polynomials in x except x[id_ZS] in parallel.
+func batchApplyDevice(x []icicle_core.DeviceSlice, fn func(p icicle_core.DeviceSlice, i int)) {
+	var wg sync.WaitGroup
+	for i := 0; i < len(x); i++ {
+		if i == id_ZS {
+			continue
+		}
+		wg.Add(1)
+		go func(i int) {
+			fn(x[i], i)
 			wg.Done()
 		}(i)
 	}
