@@ -851,59 +851,59 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	case <-s.chQk:
 	}
 
-	nbBsbGates := (len(s.x) - id_Qci + 1) >> 1
+	//nbBsbGates := (len(s.x) - id_Qci + 1) >> 1
 
-	gateConstraint := func(u ...fr.Element) fr.Element {
+	//gateConstraint := func(u ...fr.Element) fr.Element {
 
-		var ic, tmp fr.Element
+	//	var ic, tmp fr.Element
 
-		ic.Mul(&u[id_Ql], &u[id_L])
-		tmp.Mul(&u[id_Qr], &u[id_R])
-		ic.Add(&ic, &tmp)
-		tmp.Mul(&u[id_Qm], &u[id_L]).Mul(&tmp, &u[id_R])
-		ic.Add(&ic, &tmp)
-		tmp.Mul(&u[id_Qo], &u[id_O])
-		ic.Add(&ic, &tmp).Add(&ic, &u[id_Qk])
-		for i := 0; i < nbBsbGates; i++ {
-			tmp.Mul(&u[id_Qci+2*i], &u[id_Qci+2*i+1])
-			ic.Add(&ic, &tmp)
-		}
+	//	ic.Mul(&u[id_Ql], &u[id_L])
+	//	tmp.Mul(&u[id_Qr], &u[id_R])
+	//	ic.Add(&ic, &tmp)
+	//	tmp.Mul(&u[id_Qm], &u[id_L]).Mul(&tmp, &u[id_R])
+	//	ic.Add(&ic, &tmp)
+	//	tmp.Mul(&u[id_Qo], &u[id_O])
+	//	ic.Add(&ic, &tmp).Add(&ic, &u[id_Qk])
+	//	for i := 0; i < nbBsbGates; i++ {
+	//		tmp.Mul(&u[id_Qci+2*i], &u[id_Qci+2*i+1])
+	//		ic.Add(&ic, &tmp)
+	//	}
 
-		return ic
-	}
+	//	return ic
+	//}
 
 	var cs, css fr.Element
 	cs.Set(&s.domain1.FrMultiplicativeGen)
 	css.Square(&cs)
 
-	orderingConstraint := func(u ...fr.Element) fr.Element {
-		gamma := s.gamma
+	//orderingConstraint := func(u ...fr.Element) fr.Element {
+	//	gamma := s.gamma
 
-		var a, b, c, r, l fr.Element
+	//	var a, b, c, r, l fr.Element
 
-		a.Add(&gamma, &u[id_L]).Add(&a, &u[id_ID])
-		b.Mul(&u[id_ID], &cs).Add(&b, &u[id_R]).Add(&b, &gamma)
-		c.Mul(&u[id_ID], &css).Add(&c, &u[id_O]).Add(&c, &gamma)
-		r.Mul(&a, &b).Mul(&r, &c).Mul(&r, &u[id_Z])
+	//	a.Add(&gamma, &u[id_L]).Add(&a, &u[id_ID])
+	//	b.Mul(&u[id_ID], &cs).Add(&b, &u[id_R]).Add(&b, &gamma)
+	//	c.Mul(&u[id_ID], &css).Add(&c, &u[id_O]).Add(&c, &gamma)
+	//	r.Mul(&a, &b).Mul(&r, &c).Mul(&r, &u[id_Z])
 
-		a.Add(&u[id_S1], &u[id_L]).Add(&a, &gamma)
-		b.Add(&u[id_S2], &u[id_R]).Add(&b, &gamma)
-		c.Add(&u[id_S3], &u[id_O]).Add(&c, &gamma)
-		l.Mul(&a, &b).Mul(&l, &c).Mul(&l, &u[id_ZS])
+	//	a.Add(&u[id_S1], &u[id_L]).Add(&a, &gamma)
+	//	b.Add(&u[id_S2], &u[id_R]).Add(&b, &gamma)
+	//	c.Add(&u[id_S3], &u[id_O]).Add(&c, &gamma)
+	//	l.Mul(&a, &b).Mul(&l, &c).Mul(&l, &u[id_ZS])
 
-		l.Sub(&l, &r)
+	//	l.Sub(&l, &r)
 
-		return l
-	}
+	//	return l
+	//}
 
-	ratioLocalConstraint := func(u ...fr.Element) fr.Element {
+	//ratioLocalConstraint := func(u ...fr.Element) fr.Element {
 
-		var res fr.Element
-		res.SetOne()
-		res.Sub(&u[id_Z], &res).Mul(&res, &u[id_LOne])
+	//	var res fr.Element
+	//	res.SetOne()
+	//	res.Sub(&u[id_Z], &res).Mul(&res, &u[id_LOne])
 
-		return res
-	}
+	//	return res
+	//}
 
 	rho := int(s.domain1.Cardinality / n)
 	shifters := make([]fr.Element, rho)
@@ -930,33 +930,33 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	buf := make([]fr.Element, n)
 	var wgBuf sync.WaitGroup
 
-	allConstraints := func(i int, u ...fr.Element) fr.Element {
-		// scale S1, S2, S3 by β
-		u[id_S1].Mul(&u[id_S1], &s.beta)
-		u[id_S2].Mul(&u[id_S2], &s.beta)
-		u[id_S3].Mul(&u[id_S3], &s.beta)
+	//allConstraints := func(i int, u ...fr.Element) fr.Element {
+	//	// scale S1, S2, S3 by β
+	//	u[id_S1].Mul(&u[id_S1], &s.beta)
+	//	u[id_S2].Mul(&u[id_S2], &s.beta)
+	//	u[id_S3].Mul(&u[id_S3], &s.beta)
 
-		// blind L, R, O, Z, ZS
-		var y fr.Element
-		y = s.bp[id_Bl].Evaluate(twiddles0[i])
-		u[id_L].Add(&u[id_L], &y)
-		y = s.bp[id_Br].Evaluate(twiddles0[i])
-		u[id_R].Add(&u[id_R], &y)
-		y = s.bp[id_Bo].Evaluate(twiddles0[i])
-		u[id_O].Add(&u[id_O], &y)
-		y = s.bp[id_Bz].Evaluate(twiddles0[i])
-		u[id_Z].Add(&u[id_Z], &y)
+	//	// blind L, R, O, Z, ZS
+	//	var y fr.Element
+	//	y = s.bp[id_Bl].Evaluate(twiddles0[i])
+	//	u[id_L].Add(&u[id_L], &y)
+	//	y = s.bp[id_Br].Evaluate(twiddles0[i])
+	//	u[id_R].Add(&u[id_R], &y)
+	//	y = s.bp[id_Bo].Evaluate(twiddles0[i])
+	//	u[id_O].Add(&u[id_O], &y)
+	//	y = s.bp[id_Bz].Evaluate(twiddles0[i])
+	//	u[id_Z].Add(&u[id_Z], &y)
 
-		// ZS is shifted by 1; need to get correct twiddle
-		y = s.bp[id_Bz].Evaluate(twiddles0[(i+1)%int(n)])
-		u[id_ZS].Add(&u[id_ZS], &y)
+	//	// ZS is shifted by 1; need to get correct twiddle
+	//	y = s.bp[id_Bz].Evaluate(twiddles0[(i+1)%int(n)])
+	//	u[id_ZS].Add(&u[id_ZS], &y)
 
-		a := gateConstraint(u...)
-		b := orderingConstraint(u...)
-		c := ratioLocalConstraint(u...)
-		c.Mul(&c, &s.alpha).Add(&c, &b).Mul(&c, &s.alpha).Add(&c, &a)
-		return c
-	}
+	//	a := gateConstraint(u...)
+	//	b := orderingConstraint(u...)
+	//	c := ratioLocalConstraint(u...)
+	//	c.Mul(&c, &s.alpha).Add(&c, &b).Mul(&c, &s.alpha).Add(&c, &a)
+	//	return c
+	//}
 
 	// for the first iteration, the scalingVector is the coset table
 	scalingVector := cosetTable
@@ -1014,17 +1014,19 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			fft.BitReverse(scalingVectorRev)
 		}
 
-		s.onDeviceNtt(deviceInputs, scalingVector)
+		//s.onDeviceNtt(deviceInputs, scalingVector)
+		buf = s.ComputeNumeratorsOnDevice(deviceInputs, scalingVector)
+		//fmt.Println("res", res)
 
 		wgBuf.Wait()
-		if _, err := iop.Evaluate(
-			allConstraints,
-			buf,
-			iop.Form{Basis: iop.Lagrange, Layout: iop.Regular},
-			s.x...,
-		); err != nil {
-			return nil, err
-		}
+		//if _, err := iop.Evaluate(
+		//	allConstraints,
+		//	buf,
+		//	iop.Form{Basis: iop.Lagrange, Layout: iop.Regular},
+		//	s.x...,
+		//); err != nil {
+		//	return nil, err
+		//}
 		wgBuf.Add(1)
 		go func(i int) {
 			for j := 0; j < int(n); j++ {
@@ -1117,55 +1119,6 @@ func batchPolysToArr(ps []*iop.Polynomial) [][]fr.Element {
 
 }
 
-func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVector []fr.Element) {
-	log := logger.Logger().With().Str("position", "start").Logger()
-	log.Info().Msg("onDeviceNtt")
-
-	start := time.Now()
-
-	cfg := icicle_bn254.GetDefaultNttConfig()
-	cfgVec := icicle_core.DefaultVecOpsConfig()
-
-	stream, _ := cr.CreateStream()
-
-	cfg.Ctx.Stream = &stream
-	cfg.IsAsync = true
-
-	scalingDevice := make([]icicle_core.DeviceSlice, len(scalingVector))
-	scaling := ConvertFrToScalarFieldsBytes(scalingVector)
-	hostDeviceScalingSlice := core.HostSliceFromElements[bn254.ScalarField](scaling)
-	hostDeviceScalingSlice.CopyToDeviceAsync(&scalingDevice[0], stream, true)
-
-	batchApplyDevice(deviceInputs, func(p icicle_core.DeviceSlice, i int) {
-		bn254.Ntt(p, icicle_core.KInverse, &cfg, p)
-
-		// VecOp.Mul
-		bn254.VecOp(p, scalingDevice[0], p, cfgVec, icicle_core.Mul)
-
-		// ToLagrange
-		bn254.Ntt(p, icicle_core.KForward, &cfg, p)
-
-	})
-
-	scalars := ConvertFrToScalarFieldsBytes(s.x[0].Coefficients())
-	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-
-	memStart := time.Now()
-	for i := 0; i < len(s.x); i++ {
-		if i == id_ZS {
-			continue
-		}
-		hostDeviceScalarSlice.CopyFromDevice(&deviceInputs[i])
-		outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
-		for j := 0; j < len(outputAsFr); j++ {
-			s.x[i].Coefficients()[j].Set(&outputAsFr[j])
-		}
-	}
-	log.Debug().Dur("took", time.Since(memStart)).Msg("onDeviceNtt MemCpy")
-
-	log.Debug().Dur("took", time.Since(start)).Msg("onDeviceNtt")
-}
-
 func calculateNbTasks(n int) int {
 	nbAvailableCPU := runtime.NumCPU() - n
 	if nbAvailableCPU < 0 {
@@ -1185,22 +1138,6 @@ func batchApply(x []*iop.Polynomial, fn func(*iop.Polynomial)) {
 		wg.Add(1)
 		go func(i int) {
 			fn(x[i])
-			wg.Done()
-		}(i)
-	}
-	wg.Wait()
-}
-
-// batchApply executes fn on all polynomials in x except x[id_ZS] in parallel.
-func batchApplyDevice(x []icicle_core.DeviceSlice, fn func(p icicle_core.DeviceSlice, i int)) {
-	var wg sync.WaitGroup
-	for i := 0; i < len(x); i++ {
-		if i == id_ZS {
-			continue
-		}
-		wg.Add(1)
-		go func(i int) {
-			fn(x[i], i)
 			wg.Done()
 		}(i)
 	}
