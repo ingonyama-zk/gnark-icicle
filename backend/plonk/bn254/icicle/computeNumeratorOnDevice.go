@@ -31,7 +31,6 @@ func (s *instance) ComputeNumeratorOnDevice() *iop.Polynomial {
 		return nil
 	case <-s.chQk:
 	}
-
 	cosetTable, err := s.domain0.CosetTable()
 	if err != nil {
 		panic(err)
@@ -198,6 +197,7 @@ func (s *instance) ComputeNumeratorOnDevice() *iop.Polynomial {
 		}
 
 		s.onDeviceNtt(deviceInputs, scalingVector)
+
 		s.allConstraintsOnDevice(deviceInputs, alphaInput, betaInput, gammaInput, csInput, cssInput, resInput, blindingInputs, zsInput)
 
 		tmp.Inverse(&tmp)
@@ -267,8 +267,6 @@ func (s *instance) allConstraintsOnDevice(deviceInputs []core.DeviceSlice, alpha
 	bn254.Ntt(blindingInputs[id_Bl], icicle_core.KForward, &cfg, y)
 	bn254.VecOp(deviceInputs[id_L], y, deviceInputs[id_L], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
-	s.checkRes(deviceInputs[id_Ql])
-
 	bn254.Ntt(blindingInputs[id_Br], icicle_core.KForward, &cfg, y)
 	bn254.VecOp(deviceInputs[id_R], y, deviceInputs[id_R], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
@@ -282,7 +280,7 @@ func (s *instance) allConstraintsOnDevice(deviceInputs []core.DeviceSlice, alpha
 	//bn254.Ntt(blindingInputs[id_Bz], icicle_core.KForward, &cfg, y)
 	//bn254.VecOp(deviceInputs[id_ZS], y, deviceInputs[id_ZS], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
-	a := gateConstraintOnDevice(deviceInputs)
+	a := s.gateConstraintOnDevice(deviceInputs)
 	b := orderingConstraintOnDevice(deviceInputs, gammaInput, csInput, cssInput)
 	c := ratioLocalConstraintOnDevice(deviceInputs, resInput)
 
@@ -302,7 +300,7 @@ func (s *instance) checkRes(inputPtr core.DeviceSlice) {
 	fmt.Println("res", outputAsFr[:2])
 }
 
-func gateConstraintOnDevice(deviceInputs []core.DeviceSlice) core.DeviceSlice {
+func (s *instance) gateConstraintOnDevice(deviceInputs []core.DeviceSlice) core.DeviceSlice {
 	var ic, tmp core.DeviceSlice
 	ic.Malloc(deviceInputs[id_Ql].Len()*deviceInputs[id_Ql].Len(), deviceInputs[id_Ql].Len())
 	tmp.Malloc(deviceInputs[id_Ql].Len()*deviceInputs[id_Ql].Len(), deviceInputs[id_Ql].Len())
@@ -321,7 +319,7 @@ func gateConstraintOnDevice(deviceInputs []core.DeviceSlice) core.DeviceSlice {
 	bn254.VecOp(deviceInputs[id_Qo], deviceInputs[id_O], tmp, icicle_core.DefaultVecOpsConfig(), icicle_core.Mul)
 
 	bn254.VecOp(ic, tmp, ic, icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
-	bn254.VecOp(ic, tmp, deviceInputs[id_Qk], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
+	bn254.VecOp(ic, deviceInputs[id_Qk], ic, icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
 	for i := 0; i < nbBsbGates; i++ {
 		bn254.VecOp(deviceInputs[id_Qci+2*i], deviceInputs[id_Qci+2*i+1], tmp, icicle_core.DefaultVecOpsConfig(), icicle_core.Mul)

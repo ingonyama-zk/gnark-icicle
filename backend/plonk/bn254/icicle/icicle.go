@@ -611,9 +611,10 @@ func (s *instance) computeQuotient() (err error) {
 	for i := 0; i < len(s.bp); i++ {
 		s.bp[i] = placeHolder[i].Clone()
 	}
-	for j := 0; j < len(s.bp); j++ {
+	for j := 0; j < len(s.x); j++ {
 		s.x[j] = placeHolderX[j].Clone()
 	}
+
 	numerator, err = s.computeNumerator()
 	if err != nil {
 		return err
@@ -867,26 +868,27 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	case <-s.chQk:
 	}
 
-	//nbBsbGates := (len(s.x) - id_Qci + 1) >> 1
+	nbBsbGates := (len(s.x) - id_Qci + 1) >> 1
 
 	gateConstraint := func(u ...fr.Element) fr.Element {
 
-		//var ic, tmp fr.Element
-		var ic fr.Element
+		var ic, tmp fr.Element
+		//var ic fr.Element
 
 		ic.Mul(&u[id_Ql], &u[id_L])
-		//tmp.Mul(&u[id_Qr], &u[id_R])
-		//ic.Add(&ic, &tmp)
-		//tmp.Mul(&u[id_Qm], &u[id_L]).Mul(&tmp, &u[id_R])
-		//ic.Add(&ic, &tmp)
-		//tmp.Mul(&u[id_Qo], &u[id_O])
-		//ic.Add(&ic, &tmp).Add(&ic, &u[id_Qk])
-		//for i := 0; i < nbBsbGates; i++ {
-		//	tmp.Mul(&u[id_Qci+2*i], &u[id_Qci+2*i+1])
-		//	ic.Add(&ic, &tmp)
-		//}
+		tmp.Mul(&u[id_Qr], &u[id_R])
+		ic.Add(&ic, &tmp)
+		tmp.Mul(&u[id_Qm], &u[id_L]).Mul(&tmp, &u[id_R])
+		ic.Add(&ic, &tmp)
+		tmp.Mul(&u[id_Qo], &u[id_O])
+		ic.Add(&ic, &tmp).Add(&ic, &u[id_Qk])
+		for i := 0; i < nbBsbGates; i++ {
+			tmp.Mul(&u[id_Qci+2*i], &u[id_Qci+2*i+1])
+			ic.Add(&ic, &tmp)
+		}
 
 		return ic
+		//return tmp
 	}
 
 	var cs, css fr.Element
@@ -958,10 +960,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		y = s.bp[id_Bl].Evaluate(twiddles0[i])
 		u[id_L].Add(&u[id_L], &y)
 
-		if i == 0 {
-			fmt.Println("CPU", u[id_Ql])
-		}
-
 		y = s.bp[id_Br].Evaluate(twiddles0[i])
 		u[id_R].Add(&u[id_R], &y)
 
@@ -976,6 +974,9 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		u[id_ZS].Add(&u[id_ZS], &y)
 
 		a := gateConstraint(u...)
+		if i == 0 {
+			fmt.Println(a)
+		}
 
 		b := orderingConstraint(u...)
 		c := ratioLocalConstraint(u...)
