@@ -1,4 +1,4 @@
-package icicle_bn254
+package plonk_icicle
 
 import (
 	"github.com/consensys/gnark-crypto/ecc/bn254"

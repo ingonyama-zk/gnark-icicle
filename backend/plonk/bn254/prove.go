@@ -42,6 +42,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
 	fiatshamir "github.com/consensys/gnark-crypto/fiat-shamir"
 	"github.com/consensys/gnark/backend"
+	//icicle_bn254 "github.com/consensys/gnark/backend/groth16/bn254/icicle"
 	"github.com/consensys/gnark/backend/witness"
 
 	"github.com/consensys/gnark/constraint"

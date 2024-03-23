@@ -1,9 +1,12 @@
-package icicle_bn254
+package plonk_icicle
 
 import (
+	"fmt"
+	"math/big"
 	"sync"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr/iop"
 	"github.com/ingonyama-zk/icicle/wrappers/golang/core"
 	icicle_core "github.com/ingonyama-zk/icicle/wrappers/golang/core"
 	cr "github.com/ingonyama-zk/icicle/wrappers/golang/cuda_runtime"
@@ -11,7 +14,9 @@ import (
 	icicle_bn254 "github.com/ingonyama-zk/icicle/wrappers/golang/curves/bn254"
 )
 
-func (s *instance) ComputeNumeratorsOnDevice(deviceInputs []icicle_core.DeviceSlice, scalingVector []fr.Element) []fr.Element {
+// evaluate the full set of constraints, all polynomials in x are back in
+// canonical regular form at the end
+func (s *instance) ComputeNumeratorOnDevice() *iop.Polynomial {
 	n := s.domain0.Cardinality
 
 	stream, _ := cr.CreateStream()
@@ -19,6 +24,22 @@ func (s *instance) ComputeNumeratorsOnDevice(deviceInputs []icicle_core.DeviceSl
 
 	cfg.Ctx.Stream = &stream
 	cfg.IsAsync = true
+
+	cosetTable, err := s.domain0.CosetTable()
+	if err != nil {
+		panic(err)
+	}
+	scalingVector := cosetTable
+
+	deviceInputs := make([]icicle_core.DeviceSlice, len(s.x))
+	for j := 0; j < len(s.x); j++ {
+		var deviceInput core.DeviceSlice
+		scalars := ConvertFrToScalarFieldsBytes(s.x[j].Coefficients())
+		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
+		hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
+
+		deviceInputs[j] = deviceInput
+	}
 
 	var cs, css fr.Element
 	cs.Set(&s.domain1.FrMultiplicativeGen)
@@ -81,27 +102,67 @@ func (s *instance) ComputeNumeratorsOnDevice(deviceInputs []icicle_core.DeviceSl
 	hostDeviceResSlice := core.HostSliceFromElements[bn254.ScalarField](resDevice)
 	hostDeviceResSlice.CopyToDeviceAsync(&resInput, stream, true)
 
-	blindingInputs := make([]icicle_core.DeviceSlice, len(s.x))
-	for j := 0; j < len(s.bp); j++ {
-		var deviceInput core.DeviceSlice
+	rho := int(s.domain1.Cardinality / n)
 
-		padding := make([]fr.Element, int(s.domain0.Cardinality)-len(s.bp[j].Coefficients()))
-		cp := s.bp[j].Coefficients()
-		cp = append(cp, padding...)
-
-		scalars := ConvertFrToScalarFieldsBytes(cp)
-		hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-		hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
-
-		blindingInputs[j] = deviceInput
+	shifters := make([]fr.Element, rho)
+	shifters[0].Set(&s.domain1.FrMultiplicativeGen)
+	for i := 1; i < rho; i++ {
+		shifters[i].Set(&s.domain1.Generator)
 	}
 
-	s.onDeviceNtt(deviceInputs, scalingVector)
-	c := s.allConstraintsOnDevice(deviceInputs, alphaInput, betaInput, gammaInput, csInput, cssInput, resInput, blindingInputs)
+	// stores the current coset shifter
+	var coset fr.Element
+	coset.SetOne()
+
+	var tmp, one fr.Element
+	one.SetOne()
+	bn := big.NewInt(int64(n))
+
+	for i := 0; i < rho; i++ {
+
+		coset.Mul(&coset, &shifters[i])
+		tmp.Exp(coset, bn).Sub(&tmp, &one)
+
+		for _, q := range s.bp {
+			cq := q.Coefficients()
+			acc := tmp
+			for j := 0; j < len(cq); j++ {
+				cq[j].Mul(&cq[j], &acc)
+				acc.Mul(&acc, &shifters[i])
+			}
+		}
+
+		blindingInputs := make([]icicle_core.DeviceSlice, len(s.bp))
+		for j := 0; j < len(s.bp); j++ {
+			var deviceInput core.DeviceSlice
+
+			padding := make([]fr.Element, int(s.domain0.Cardinality)-len(s.bp[j].Coefficients()))
+			cp := s.bp[j].Coefficients()
+			cp = append(cp, padding...)
+
+			scalars := ConvertFrToScalarFieldsBytes(cp)
+			hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
+			hostDeviceScalarSlice.CopyToDeviceAsync(&deviceInput, stream, true)
+
+			blindingInputs[j] = deviceInput
+		}
+
+		s.onDeviceNtt(deviceInputs, scalingVector)
+		s.allConstraintsOnDevice(deviceInputs, alphaInput, betaInput, gammaInput, csInput, cssInput, resInput, blindingInputs)
+
+		tmp.Inverse(&tmp)
+		// bl <- bl *( (s*ωⁱ)ⁿ-1 )s
+		for _, q := range s.bp {
+			cq := q.Coefficients()
+			for j := 0; j < len(cq); j++ {
+				cq[j].Mul(&cq[j], &tmp)
+			}
+		}
+	}
 
 	scalars := ConvertFrToScalarFieldsBytes(s.x[0].Coefficients())
 	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-	hostDeviceScalarSlice.CopyFromDeviceAsync(&c, stream)
+	//hostDeviceScalarSlice.CopyFromDeviceAsync(&c, stream)
 	outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
 
 	buf := make([]fr.Element, n)
@@ -109,7 +170,8 @@ func (s *instance) ComputeNumeratorsOnDevice(deviceInputs []icicle_core.DeviceSl
 		buf[i].Set(&outputAsFr[i])
 	}
 
-	return buf
+	cres := iop.NewPolynomial(&buf, iop.Form{Basis: iop.LagrangeCoset, Layout: iop.BitReverse})
+	return cres
 }
 
 func (s *instance) allConstraintsOnDevice(deviceInputs []core.DeviceSlice, alphaInput core.DeviceSlice, betaInput core.DeviceSlice, gammaInput core.DeviceSlice, csInput core.DeviceSlice, cssInput core.DeviceSlice, resInput core.DeviceSlice, blindingInputs []core.DeviceSlice) core.DeviceSlice {
@@ -123,23 +185,24 @@ func (s *instance) allConstraintsOnDevice(deviceInputs []core.DeviceSlice, alpha
 	bn254.VecOp(deviceInputs[id_S2], betaInput, deviceInputs[id_S2], icicle_core.DefaultVecOpsConfig(), icicle_core.Mul)
 	bn254.VecOp(deviceInputs[id_S3], betaInput, deviceInputs[id_S3], icicle_core.DefaultVecOpsConfig(), icicle_core.Mul)
 
-	var y, x core.DeviceSlice
+	var y core.DeviceSlice
 	y.Malloc(blindingInputs[id_Bl].Len(), 1)
-	x.Malloc(blindingInputs[id_Bz].Len(), 1)
+	//x.Malloc(blindingInputs[id_Bz].Len(), 1)
 
+	s.checkRes(blindingInputs[id_Bl])
 	bn254.Ntt(blindingInputs[id_Bl], icicle_core.KForward, &cfg, y)
 	bn254.VecOp(deviceInputs[id_L], y, deviceInputs[id_L], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
 	bn254.Ntt(blindingInputs[id_Br], icicle_core.KForward, &cfg, y)
-	bn254.VecOp(deviceInputs[id_L], y, deviceInputs[id_L], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
+	bn254.VecOp(deviceInputs[id_R], y, deviceInputs[id_R], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
 	bn254.Ntt(blindingInputs[id_Bo], icicle_core.KForward, &cfg, y)
 	bn254.VecOp(deviceInputs[id_O], y, deviceInputs[id_O], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
-	bn254.Ntt(blindingInputs[id_Bz], icicle_core.KForward, &cfg, x)
+	bn254.Ntt(blindingInputs[id_Bz], icicle_core.KForward, &cfg, y)
 	bn254.VecOp(deviceInputs[id_Z], y, deviceInputs[id_Z], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
-	// TODO Figure out shifted ZS
+	// need to be shifted by 1
 	bn254.Ntt(blindingInputs[id_Bz], icicle_core.KForward, &cfg, y)
 	bn254.VecOp(deviceInputs[id_ZS], y, deviceInputs[id_ZS], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
@@ -153,6 +216,14 @@ func (s *instance) allConstraintsOnDevice(deviceInputs []core.DeviceSlice, alpha
 	bn254.VecOp(c, a, c, icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
 	return c
+}
+
+func (s *instance) checkRes(inputPtr core.DeviceSlice) {
+	scalars := ConvertFrToScalarFieldsBytes(s.x[0].Coefficients())
+	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
+	hostDeviceScalarSlice.CopyFromDevice(&inputPtr)
+	outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
+	fmt.Println("res", outputAsFr[:2])
 }
 
 func gateConstraintOnDevice(deviceInputs []core.DeviceSlice) core.DeviceSlice {
