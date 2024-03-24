@@ -873,7 +873,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 	gateConstraint := func(u ...fr.Element) fr.Element {
 
 		var ic, tmp fr.Element
-		//var ic fr.Element
 
 		ic.Mul(&u[id_Ql], &u[id_L])
 		tmp.Mul(&u[id_Qr], &u[id_R])
@@ -888,7 +887,6 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		}
 
 		return ic
-		//return tmp
 	}
 
 	var cs, css fr.Element
@@ -974,12 +972,12 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 		u[id_ZS].Add(&u[id_ZS], &y)
 
 		a := gateConstraint(u...)
-		if i == 0 {
-			fmt.Println(a)
-		}
-
 		b := orderingConstraint(u...)
+		if i == 0 {
+			fmt.Println("b", b)
+		}
 		c := ratioLocalConstraint(u...)
+
 		c.Mul(&c, &s.alpha).Add(&c, &b).Mul(&c, &s.alpha).Add(&c, &a)
 		return c
 	}
@@ -1045,6 +1043,7 @@ func (s *instance) computeNumerator() (*iop.Polynomial, error) {
 			// fft in the correct coset
 			p.ToLagrange(s.domain0, nbTasks).ToRegular()
 		})
+		//fmt.Println("r", s.x[id_R].Coefficients()[0])
 
 		wgBuf.Wait()
 		if _, err := iop.Evaluate(

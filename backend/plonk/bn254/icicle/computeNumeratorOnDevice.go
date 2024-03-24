@@ -280,8 +280,8 @@ func (s *instance) allConstraintsOnDevice(deviceInputs []core.DeviceSlice, alpha
 	//bn254.Ntt(blindingInputs[id_Bz], icicle_core.KForward, &cfg, y)
 	//bn254.VecOp(deviceInputs[id_ZS], y, deviceInputs[id_ZS], icicle_core.DefaultVecOpsConfig(), icicle_core.Add)
 
-	a := s.gateConstraintOnDevice(deviceInputs)
-	b := orderingConstraintOnDevice(deviceInputs, gammaInput, csInput, cssInput)
+	a := gateConstraintOnDevice(deviceInputs)
+	b := s.orderingConstraintOnDevice(deviceInputs, gammaInput, csInput, cssInput)
 	c := ratioLocalConstraintOnDevice(deviceInputs, resInput)
 
 	bn254.VecOp(c, alphaInput, c, icicle_core.DefaultVecOpsConfig(), icicle_core.Mul)
@@ -292,15 +292,7 @@ func (s *instance) allConstraintsOnDevice(deviceInputs []core.DeviceSlice, alpha
 	return c
 }
 
-func (s *instance) checkRes(inputPtr core.DeviceSlice) {
-	scalars := ConvertFrToScalarFieldsBytes(s.x[0].Coefficients())
-	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
-	hostDeviceScalarSlice.CopyFromDevice(&inputPtr)
-	outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
-	fmt.Println("res", outputAsFr[:2])
-}
-
-func (s *instance) gateConstraintOnDevice(deviceInputs []core.DeviceSlice) core.DeviceSlice {
+func gateConstraintOnDevice(deviceInputs []core.DeviceSlice) core.DeviceSlice {
 	var ic, tmp core.DeviceSlice
 	ic.Malloc(deviceInputs[id_Ql].Len()*deviceInputs[id_Ql].Len(), deviceInputs[id_Ql].Len())
 	tmp.Malloc(deviceInputs[id_Ql].Len()*deviceInputs[id_Ql].Len(), deviceInputs[id_Ql].Len())
@@ -329,20 +321,20 @@ func (s *instance) gateConstraintOnDevice(deviceInputs []core.DeviceSlice) core.
 	return ic
 }
 
-func orderingConstraintOnDevice(deviceInputs []core.DeviceSlice, gammaInput core.DeviceSlice, csInput core.DeviceSlice, cssInput core.DeviceSlice) core.DeviceSlice {
+func (s *instance) orderingConstraintOnDevice(deviceInputs []core.DeviceSlice, gammaInput core.DeviceSlice, csInput core.DeviceSlice, cssInput core.DeviceSlice) core.DeviceSlice {
 	var a, b, c, r, l core.DeviceSlice
-	a.Malloc(deviceInputs[id_L].Len(), 1)
-	b.Malloc(deviceInputs[id_R].Len(), 1)
-	c.Malloc(deviceInputs[id_O].Len(), 1)
-	r.Malloc(deviceInputs[id_Z].Len(), 1)
-	l.Malloc(deviceInputs[id_ZS].Len(), 1)
+	a.Malloc(deviceInputs[id_L].Len()*deviceInputs[id_L].Len(), deviceInputs[id_L].Len())
+	b.Malloc(deviceInputs[id_R].Len()*deviceInputs[id_R].Len(), deviceInputs[id_R].Len())
+	c.Malloc(deviceInputs[id_O].Len()*deviceInputs[id_O].Len(), deviceInputs[id_O].Len())
+	r.Malloc(deviceInputs[id_Z].Len()*deviceInputs[id_Z].Len(), deviceInputs[id_Z].Len())
+	l.Malloc(deviceInputs[id_ZS].Len()*deviceInputs[id_ZS].Len(), deviceInputs[id_ZS].Len())
 
 	cfgVec := icicle_core.DefaultVecOpsConfig()
 
 	bn254.VecOp(gammaInput, deviceInputs[id_L], a, cfgVec, icicle_core.Add)
 	bn254.VecOp(a, deviceInputs[id_ID], a, cfgVec, icicle_core.Add)
 
-	bn254.VecOp(deviceInputs[id_R], csInput, b, cfgVec, icicle_core.Mul)
+	bn254.VecOp(deviceInputs[id_ID], csInput, b, cfgVec, icicle_core.Mul)
 	bn254.VecOp(b, deviceInputs[id_R], b, cfgVec, icicle_core.Add)
 	bn254.VecOp(b, gammaInput, b, cfgVec, icicle_core.Add)
 
@@ -358,13 +350,15 @@ func orderingConstraintOnDevice(deviceInputs []core.DeviceSlice, gammaInput core
 	bn254.VecOp(a, gammaInput, a, cfgVec, icicle_core.Add)
 
 	bn254.VecOp(deviceInputs[id_S2], deviceInputs[id_R], b, cfgVec, icicle_core.Add)
-	bn254.VecOp(b, gammaInput, a, cfgVec, icicle_core.Add)
+	bn254.VecOp(b, gammaInput, b, cfgVec, icicle_core.Add)
 
 	bn254.VecOp(deviceInputs[id_S3], deviceInputs[id_O], c, cfgVec, icicle_core.Add)
 	bn254.VecOp(c, gammaInput, c, cfgVec, icicle_core.Add)
 
 	bn254.VecOp(a, b, l, cfgVec, icicle_core.Mul)
 	bn254.VecOp(l, c, l, cfgVec, icicle_core.Mul)
+
+	// TODO id_ZS is wrong here
 	bn254.VecOp(l, deviceInputs[id_ZS], l, cfgVec, icicle_core.Mul)
 
 	bn254.VecOp(l, r, l, cfgVec, icicle_core.Sub)
@@ -399,7 +393,10 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 	hostDeviceScalingSlice.CopyToDeviceAsync(&scalingDevice[0], stream, true)
 
 	batchApplyDevice(deviceInputs, func(p icicle_core.DeviceSlice, i int) {
-		bn254.Ntt(p, icicle_core.KInverse, &cfg, p)
+		// TODO Fix and find a better way
+		if i != id_ID {
+			bn254.Ntt(p, icicle_core.KInverse, &cfg, p)
+		}
 
 		// VecOp.Mul
 		bn254.VecOp(p, scalingDevice[0], p, cfgVec, icicle_core.Mul)
@@ -408,6 +405,7 @@ func (s *instance) onDeviceNtt(deviceInputs []icicle_core.DeviceSlice, scalingVe
 		bn254.Ntt(p, icicle_core.KForward, &cfg, p)
 
 	})
+	//s.checkRes(deviceInputs[id_R])
 }
 
 // batchApply executes fn on all polynomials in x except x[id_ZS] in parallel.
@@ -424,4 +422,12 @@ func batchApplyDevice(x []icicle_core.DeviceSlice, fn func(p icicle_core.DeviceS
 		}(i)
 	}
 	wg.Wait()
+}
+
+func (s *instance) checkRes(inputPtr core.DeviceSlice) {
+	scalars := ConvertFrToScalarFieldsBytes(s.x[0].Coefficients())
+	hostDeviceScalarSlice := core.HostSliceFromElements[bn254.ScalarField](scalars)
+	hostDeviceScalarSlice.CopyFromDevice(&inputPtr)
+	outputAsFr := ConvertScalarFieldsToFrBytes(hostDeviceScalarSlice)
+	fmt.Println("res", outputAsFr[:2])
 }
