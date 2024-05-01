@@ -95,7 +95,7 @@ func (cs *system) Solve(witness witness.Witness, opts ...csolver.Option) (any, e
 		return nil, err
 	}
 
-	log.Debug().Dur("took", time.Since(start)).Msg("constraint system solver done")
+	log.Info().Dur("took", time.Since(start)).Msg("constraint system solver done")
 
 	// format the solution
 	// TODO @gbotrel revisit post-refactor

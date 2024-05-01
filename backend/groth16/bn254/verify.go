@@ -136,7 +136,7 @@ func Verify(proof *Proof, vk *VerifyingKey, publicWitness fr.Vector, opts ...bac
 		return errPairingCheckFailed
 	}
 
-	log.Debug().Dur("took", time.Since(start)).Msg("verifier done")
+	log.Info().Dur("took", time.Since(start)).Msg("verifier done")
 	return nil
 }
 
