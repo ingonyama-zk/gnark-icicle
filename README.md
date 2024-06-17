@@ -140,7 +140,11 @@ You can then toggle on or off icicle acceleration by providing the `WithIcicleAc
     proof, err := groth16.Prove(ccs, pk, secretWitness)
 ```
 
-For more information about prerequisites see the [Icicle repo](https://github.com/ingonyama-zk/icicle).
+As ICICLE does not ship with prebuilt libraries, you will need to manually build them.
+For instruction on how to build ICICLE, check out the Golang bindings in the [ICICLE repo](https://github.com/ingonyama-zk/icicle/wrappers/golang/README.md).
+
+> [!IMPORTANT]
+> Building the ICICLE libs manually should be done within your local Go dependencies directory (GOPATH), e.g. ~/go/pkg/mod/github.com/ingonyama-zk/icicle/v2@v2.0.3/wrappers/golang
 
 ## Citing
 
