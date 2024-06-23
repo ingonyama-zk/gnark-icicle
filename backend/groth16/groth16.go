@@ -45,6 +45,7 @@ import (
 	gnarkio "github.com/consensys/gnark/io"
 
 	groth16_bls12377 "github.com/consensys/gnark/backend/groth16/bls12-377"
+	icicle_bls12377 "github.com/consensys/gnark/backend/groth16/bls12-377/icicle"
 	groth16_bls12381 "github.com/consensys/gnark/backend/groth16/bls12-381"
 	groth16_bls24315 "github.com/consensys/gnark/backend/groth16/bls24-315"
 	groth16_bls24317 "github.com/consensys/gnark/backend/groth16/bls24-317"
@@ -170,6 +171,9 @@ func Verify(proof Proof, vk VerifyingKey, publicWitness witness.Witness, opts ..
 func Prove(r1cs constraint.ConstraintSystem, pk ProvingKey, fullWitness witness.Witness, opts ...backend.ProverOption) (Proof, error) {
 	switch _r1cs := r1cs.(type) {
 	case *cs_bls12377.R1CS:
+		if icicle_bls12377.HasIcicle {
+			return icicle_bls12377.Prove(_r1cs, pk.(*icicle_bls12377.ProvingKey), fullWitness, opts...)
+		}
 		return groth16_bls12377.Prove(_r1cs, pk.(*groth16_bls12377.ProvingKey), fullWitness, opts...)
 
 	case *cs_bls12381.R1CS:
@@ -210,8 +214,15 @@ func Setup(r1cs constraint.ConstraintSystem) (ProvingKey, VerifyingKey, error) {
 
 	switch _r1cs := r1cs.(type) {
 	case *cs_bls12377.R1CS:
-		var pk groth16_bls12377.ProvingKey
 		var vk groth16_bls12377.VerifyingKey
+		if icicle_bls12377.HasIcicle {
+			var pk groth16_bls12377.ProvingKey
+			if err := groth16_bls12377.Setup(_r1cs, &pk, &vk); err != nil {
+				return nil, nil, err
+			}
+			return &pk, &vk, nil
+		}
+		var pk groth16_bls12377.ProvingKey
 		if err := groth16_bls12377.Setup(_r1cs, &pk, &vk); err != nil {
 			return nil, nil, err
 		}
@@ -275,6 +286,13 @@ func Setup(r1cs constraint.ConstraintSystem) (ProvingKey, VerifyingKey, error) {
 func DummySetup(r1cs constraint.ConstraintSystem) (ProvingKey, error) {
 	switch _r1cs := r1cs.(type) {
 	case *cs_bls12377.R1CS:
+		if icicle_bls12377.HasIcicle {
+			var pk icicle_bls12377.ProvingKey
+			if err := icicle_bls12377.DummySetup(_r1cs, &pk); err != nil {
+				return nil, err
+			}
+			return &pk, nil
+		}
 		var pk groth16_bls12377.ProvingKey
 		if err := groth16_bls12377.DummySetup(_r1cs, &pk); err != nil {
 			return nil, err
@@ -340,6 +358,9 @@ func NewProvingKey(curveID ecc.ID) ProvingKey {
 		}
 	case ecc.BLS12_377:
 		pk = &groth16_bls12377.ProvingKey{}
+		if icicle_bls12377.HasIcicle {
+			pk = &icicle_bls12377.ProvingKey{}
+		}
 	case ecc.BLS12_381:
 		pk = &groth16_bls12381.ProvingKey{}
 	case ecc.BW6_761:
