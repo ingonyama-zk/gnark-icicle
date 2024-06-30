@@ -14,7 +14,8 @@ require (
 	github.com/google/go-cmp v0.5.9
 	github.com/google/pprof v0.0.0-20230817174616-7a8ec2ada47b
 	github.com/icza/bitio v1.1.0
-	github.com/ingonyama-zk/icicle/v2 v2.0.0-20240620074550-c92881fb7d1c
+	//	github.com/ingonyama-zk/icicle/v2 v2.0.0-20240620074550-c92881fb7d1c
+	github.com/ingonyama-zk/icicle/v2 v2.0.0-20240624112314-26dbd224b43f
 	github.com/leanovate/gopter v0.2.9
 	github.com/rs/zerolog v1.30.0
 	github.com/stretchr/testify v1.8.4
