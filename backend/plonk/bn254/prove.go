@@ -53,6 +53,7 @@ import (
 	iciclecr "github.com/ingonyama-zk/icicle/v2/wrappers/golang/cuda_runtime"
 	iciclebn254 "github.com/ingonyama-zk/icicle/v2/wrappers/golang/curves/bn254"
 	iciclentt "github.com/ingonyama-zk/icicle/v2/wrappers/golang/curves/bn254/ntt"
+	iciclebn254poly "github.com/ingonyama-zk/icicle/v2/wrappers/golang/curves/bn254/polynomial"
 )
 
 const (
@@ -187,6 +188,9 @@ type instance struct {
 	h        *iop.Polynomial   // h is the quotient polynomial
 	blindedZ []fr.Element      // blindedZ is the blinded version of Z
 
+	x_icicle []iciclebn254poly.DensePolynomial
+	bp_icicle []iciclebn254poly.DensePolynomial
+
 	linearizedPolynomial       []fr.Element
 	linearizedPolynomialDigest kzg.Digest
 
@@ -215,6 +219,30 @@ type instance struct {
 
 	trace *Trace
 }
+///takes a u64 fr.Element (Gnark) and output a iciclebn254.Scalar in u32
+func icicle_u64tou32(x fr.Element)iciclebn254.ScalarField {
+	x_bits:= x.Bits()
+	x_u32 := iciclecore.ConvertUint64ArrToUint32Arr(x_bits[:])
+	var x_icicle_scalar iciclebn254.ScalarField
+	x_icicle_scalar.FromLimbs(x_u32)
+	return x_icicle_scalar
+}
+func define_icicle_poly(gnark_poly *iop.Polynomial) iciclebn254poly.DensePolynomial {
+	// cast the coefficients to the correct type
+	icicle_data := (iciclecore.HostSlice[fr.Element])(gnark_poly.Coefficients())
+	// create poly from coefficients on device in Mont form
+	var output iciclebn254poly.DensePolynomial
+	if (gnark_poly.Basis == 1) { // 1 is canonical
+		fmt.Println("Basis: ",gnark_poly.Basis)
+		output.CreateFromCoefficients(icicle_data)
+	} else if (gnark_poly.Basis == 2){ //2 is Lagranege
+		fmt.Println("Basis: ",gnark_poly.Basis)
+		output.CreateFromROUEvaluations(icicle_data)
+	}
+	output_As_device_slice := 	output.AsDeviceSlice(fr.Bytes)
+	iciclebn254.FromMontgomery(&output_As_device_slice)
+	return output
+}
 
 func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts *backend.ProverConfig) (*instance, error) {
 	if opts.HashToFieldFn == nil {
@@ -228,6 +256,7 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *ProvingKey, fullWi
 		opt:                    opts,
 		fullWitness:            fullWitness,
 		bp:                     make([]*iop.Polynomial, nb_blinding_polynomials),
+		bp_icicle: 				make([]iciclebn254poly.DensePolynomial, nb_blinding_polynomials),
 		fs:                     fiatshamir.NewTranscript(opts.ChallengeHash, "gamma", "beta", "alpha", "zeta"),
 		kzgFoldingHash:         opts.KZGFoldingHash,
 		htfFunc:                opts.HashToFieldFn,
@@ -243,6 +272,8 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *ProvingKey, fullWi
 	}
 	s.initBSB22Commitments()
 	s.x = make([]*iop.Polynomial, id_Qci+2*len(s.commitmentInfo))
+	s.x_icicle = make([]iciclebn254poly.DensePolynomial, id_Qci+2*len(s.commitmentInfo))
+
 
 	// init fft domains
 	nbConstraints := spr.GetNbConstraints()
@@ -250,13 +281,13 @@ func newInstance(ctx context.Context, spr *cs.SparseR1CS, pk *ProvingKey, fullWi
 	s.domain0 = fft.NewDomain(sizeSystem)
 
 	gen, _ := fft.Generator(3 * s.domain0.Cardinality)
-	genBits := gen.Bits()
-	limbs := iciclecore.ConvertUint64ArrToUint32Arr(genBits[:])
-	var rouIcicle iciclebn254.ScalarField
-	rouIcicle.FromLimbs(limbs)
+	rouIcicle:= icicle_u64tou32(gen)
 	iciclectx, _ := iciclecr.GetDefaultDeviceContext()
 	iciclentt.InitDomain(rouIcicle, iciclectx, true)
 
+	//...initialize ICICLE polynomial backend
+	iciclebn254poly.InitPolyBackend()
+		//...
 	// h, the quotient polynomial is of degree 3(n+1)+2, so it's in a 3(n+2) dim vector space,
 	// the domain is the next power of 2 superior to 3(n+2). 4*domainNum is enough in all cases
 	// except when n<6.
@@ -277,6 +308,24 @@ func (s *instance) initBlindingPolynomials() error {
 	s.bp[id_Br] = getRandomPolynomial(order_blinding_R)
 	s.bp[id_Bo] = getRandomPolynomial(order_blinding_O)
 	s.bp[id_Bz] = getRandomPolynomial(order_blinding_Z)
+	s.bp_icicle[id_Bl] = define_icicle_poly(s.bp[id_Bl])
+	// s.bp_icicle[id_Br] = define_icicle_poly_coeff(s.bp[id_Br])
+	// s.bp_icicle[id_Bo] = define_icicle_poly_coeff(s.bp[id_Bo])
+	// s.bp_icicle[id_Bz] = define_icicle_poly_coeff(s.bp[id_Bz])
+	
+	var two iciclebn254.ScalarField
+	
+	icicle_evalBl := s.bp_icicle[id_Bl].Eval(two.FromUint32(2)) 
+	gnark_evalBl := s.bp[id_Bl].Evaluate(fr.NewElement(2))
+	fmt.Println("icicle_evalBl",icicle_evalBl)
+	fmt.Println("gnark_evalBl:" , icicle_u64tou32(gnark_evalBl))
+	//clone the gnark poly
+	bp_eval := s.bp[id_Bl].Clone()
+	//conver to lagrange form: basis=2
+	bp_eval.ToLagrange(s.domain0)
+	s.bp_icicle[id_Br] = define_icicle_poly(bp_eval)
+	icicle_evalconverted := s.bp_icicle[id_Br].Eval(two.FromUint32(2))
+	fmt.Println("icicle_evalBr",icicle_evalconverted)
 	close(s.chbp)
 	return nil
 }
@@ -354,6 +403,7 @@ func (s *instance) solveConstraints() error {
 	s.x[id_O] = iop.NewPolynomial(&evaluationODomainSmall, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
 
 	wg.Wait()
+
 
 	// commit to l, r, o and add blinding factors
 	if err := s.commitToLRO(); err != nil {
