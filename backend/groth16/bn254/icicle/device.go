@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"github.com/consensys/gnark/logger"
-	icicle_runtime "github.com/ingonyama-zk/icicle/v3/wrappers/golang/runtime"
+	icicle_runtime "github.com/ingonyama-zk/icicle-gnark/v3/wrappers/golang/runtime"
 )
 
 var onceWarmUpDevice sync.Once
@@ -20,9 +20,21 @@ func warmUpDevice() {
 		device := icicle_runtime.CreateDevice("CUDA", 0)
 		log.Debug().Int32("id", device.Id).Str("type", device.GetDeviceType()).Msg("ICICLE device created")
 		icicle_runtime.RunOnDevice(&device, func(args ...any) {
-			err := icicle_runtime.WarmUpDevice()
+			stream, err := icicle_runtime.CreateStream()
+			if err != icicle_runtime.Success {
+				panic(fmt.Sprintf("ICICLE device warmup error while creating stream: %s", err.AsString()))
+			}
+			err = icicle_runtime.WarmUpDevice(stream)
 			if err != icicle_runtime.Success {
 				panic(fmt.Sprintf("ICICLE device warmup error: %s", err.AsString()))
+			}
+			err = icicle_runtime.SynchronizeStream(stream)
+			if err != icicle_runtime.Success {
+				panic(fmt.Sprintf("ICICLE device warmup error while syncing stream: %s", err.AsString()))
+			}
+			err = icicle_runtime.DestroyStream(stream)
+			if err != icicle_runtime.Success {
+				panic(fmt.Sprintf("ICICLE device warmup error while destroying stream: %s", err.AsString()))
 			}
 		})
 	})
